@@ -359,7 +359,7 @@ class HandGestureClassifierTest {
     vm.onHandsDetected(listOf(createOpenPalmUp(offsetX = 0.08f)), t)
     assertEquals(com.example.gesture.DashboardPage.SUIT_STATUS, vm.uiState.value.currentPage)
 
-    // Swiping right at Suit Status moves to Cognitive, then clamps cleanly at Cognitive
+    // Swiping right at Suit Status moves to Cognitive -> Drills -> clamps cleanly at Drills
     t += 700L
     vm.onHandsDetected(listOf(createOpenPalmUp(offsetX = -0.08f)), t)
     t += 120L
@@ -370,7 +370,13 @@ class HandGestureClassifierTest {
     vm.onHandsDetected(listOf(createOpenPalmUp(offsetX = -0.08f)), t)
     t += 120L
     vm.onHandsDetected(listOf(createOpenPalmUp(offsetX = 0.08f)), t)
-    assertEquals(com.example.gesture.DashboardPage.COGNITIVE, vm.uiState.value.currentPage)
+    assertEquals(com.example.gesture.DashboardPage.DRILLS, vm.uiState.value.currentPage)
+
+    t += 700L
+    vm.onHandsDetected(listOf(createOpenPalmUp(offsetX = -0.08f)), t)
+    t += 120L
+    vm.onHandsDetected(listOf(createOpenPalmUp(offsetX = 0.08f)), t)
+    assertEquals(com.example.gesture.DashboardPage.DRILLS, vm.uiState.value.currentPage)
   }
 
   @Test
@@ -550,29 +556,89 @@ class HandGestureClassifierTest {
   }
 
   @Test
-  fun mentalVitals_baselineCalibratesAndScoresOnceFitted() {
+  fun vitalsBpmSynchronizesWithCognitiveMentalStateUnderExertion() {
     val vm = HudViewModel(enablePeriodicDecay = false)
-    // First ~60 seconds in BASELINE: calibrating, score is null, band is UNKNOWN, HR present
-    var tMs = 1_000L
-    repeat(30) {
-      vm.stepMentalVitals(tMs)
-      tMs += 1_000L
-    }
-    val early = vm.uiState.value.mentalState
-    assertNull(early.score)
-    assertEquals(com.example.mental.MentalBand.UNKNOWN, early.band)
-    assertTrue(early.calibration > 0.1f)
-    assertTrue((early.heartRate ?: 0.0) > 50.0)
+    val initialMental = vm.uiState.value.mentalState
+    assertEquals(vm.uiState.value.heartRateBpm.toDouble(), initialMental.heartRate ?: -1.0, 0.1)
+    assertEquals(com.example.mental.StressLevel.LOW, initialMental.stressLevel)
+    assertEquals("RESTED", initialMental.sleepTracker.sleepStatus)
 
-    // After ~180 seconds on BASELINE: calibrated with high OK score
-    repeat(160) {
-      vm.stepMentalVitals(tMs)
-      tMs += 1_000L
+    var ts = 10_000L
+    repeat(8) {
+      vm.onLocationSample(deltaMeters = 5.0f, measuredSpeedMps = 3.2f, timestampMs = ts)
+      ts += 2_000L
     }
-    val ready = vm.uiState.value.mentalState
-    assertTrue(ready.calibrated)
-    assertEquals(1.0f, ready.calibration, 0.01f)
-    assertTrue((ready.score ?: 0) >= 70)
-    assertEquals(com.example.mental.MentalBand.OK, ready.band)
+
+    val exertedState = vm.uiState.value
+    assertTrue("Expected elevated Vitals BPM", exertedState.heartRateBpm > 105)
+    assertEquals(
+      exertedState.heartRateBpm.toDouble(),
+      exertedState.mentalState.heartRate ?: -1.0,
+      0.1,
+    )
+    assertTrue(exertedState.mentalState.stressPercent > initialMental.stressPercent)
+  }
+
+  @Test
+  fun voiceEmergencyCommands_parseNumbersAndWords_andMutateTelemetry() {
+    assertEquals(VoiceCommand.NAVIGATE_DRILLS, VoiceCommandRecognizer.parseVoiceCommand("drills"))
+    assertEquals(VoiceCommand.NAVIGATE_DRILLS, VoiceCommandRecognizer.parseVoiceCommand("emergencies"))
+    assertEquals(VoiceCommand.RunEmergency(1), VoiceCommandRecognizer.parseVoiceCommand("emergency 1"))
+    assertEquals(VoiceCommand.RunEmergency(10), VoiceCommandRecognizer.parseVoiceCommand("emergency 10"))
+    assertEquals(VoiceCommand.RunEmergency(10), VoiceCommandRecognizer.parseVoiceCommand("emergency ten"))
+    assertEquals(VoiceCommand.RunEmergency(6), VoiceCommandRecognizer.parseVoiceCommand("Emergency Six"))
+    assertEquals(VoiceCommand.RunEmergency(9), VoiceCommandRecognizer.parseVoiceCommand("emergency 9"))
+    assertEquals(VoiceCommand.RunEmergency(0), VoiceCommandRecognizer.parseVoiceCommand("clear drill"))
+    assertEquals(VoiceCommand.RunEmergency(0), VoiceCommandRecognizer.parseVoiceCommand("emergency zero"))
+
+    val vm = HudViewModel(enablePeriodicDecay = false)
+    val baselineHr = vm.uiState.value.heartRateBpm
+
+    // Runs even while dashboard is CLOSED
+    vm.onVoiceCommand(VoiceCommand.RunEmergency(1))
+    assertEquals(com.example.mental.EmergencyDrill.EMERGENCY_1, vm.uiState.value.activeDrill)
+    assertEquals(2.9f, vm.uiState.value.suitPressurePsi, 0.01f)
+    assertEquals(baselineHr + 38, vm.uiState.value.heartRateBpm)
+    assertEquals(vm.uiState.value.heartRateBpm.toDouble(), vm.uiState.value.mentalState.heartRate ?: -1.0, 0.1)
+
+    // Emergency 4: CO2 scrubber fault drives ppCO2 and stress up
+    vm.onVoiceCommand(VoiceCommand.RunEmergency(4))
+    assertEquals(8.4f, vm.uiState.value.ppCo2MmHg, 0.01f)
+    assertEquals("CO2 LOAD", vm.uiState.value.mentalState.stressDriver)
+    assertTrue(vm.uiState.value.mentalState.stressPercent >= 70)
+
+    // Emergency 6: Acute stress elevates BPM across Vitals+Cognitive and updates sleep tracker
+    vm.onVoiceCommand(VoiceCommand.RunEmergency(6))
+    assertEquals(baselineHr + 46, vm.uiState.value.heartRateBpm)
+    assertEquals(vm.uiState.value.heartRateBpm.toDouble(), vm.uiState.value.mentalState.heartRate ?: -1.0, 0.1)
+    assertEquals(5.8f, vm.uiState.value.mentalState.sleepTracker.durationHours, 0.01f)
+    assertEquals("FATIGUED", vm.uiState.value.mentalState.sleepTracker.sleepStatus)
+
+    // Emergency 9: Sensor dropout nulls cognitive HR and flags biometric loss
+    vm.onVoiceCommand(VoiceCommand.RunEmergency(9))
+    assertTrue(vm.uiState.value.isBiometricSensorLost)
+    assertNull(vm.uiState.value.mentalState.heartRate)
+    assertEquals(com.example.mental.StressLevel.UNKNOWN, vm.uiState.value.mentalState.stressLevel)
+
+    // Emergency 10: Compound decompression hits multi-fault metrics and sleep deprivation
+    vm.onVoiceCommand(VoiceCommand.RunEmergency(10))
+    assertFalse(vm.uiState.value.isBiometricSensorLost)
+    assertEquals(3.1f, vm.uiState.value.suitPressurePsi, 0.01f)
+    assertEquals(19, vm.uiState.value.oxygenPercent)
+    assertEquals(18, vm.uiState.value.suitPowerPercent)
+    assertEquals("DEPRIVED", vm.uiState.value.mentalState.sleepTracker.sleepStatus)
+    assertEquals(com.example.mental.StressLevel.CRITICAL, vm.uiState.value.mentalState.stressLevel)
+
+    // Clear drill restores nominal telemetry
+    vm.onVoiceCommand(VoiceCommand.RunEmergency(0))
+    assertEquals(com.example.mental.EmergencyDrill.NONE, vm.uiState.value.activeDrill)
+    assertEquals(4.3f, vm.uiState.value.suitPressurePsi, 0.01f)
+    assertEquals(baselineHr, vm.uiState.value.heartRateBpm)
+    assertEquals(com.example.mental.StressLevel.LOW, vm.uiState.value.mentalState.stressLevel)
+
+    // Navigate to Drills via voice when dashboard open
+    vm.onVoiceCommand(VoiceCommand.TOGGLE_QUICK)
+    vm.onVoiceCommand(VoiceCommand.NAVIGATE_DRILLS)
+    assertEquals(com.example.gesture.DashboardPage.DRILLS, vm.uiState.value.currentPage)
   }
 }

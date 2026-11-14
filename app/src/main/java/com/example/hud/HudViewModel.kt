@@ -8,10 +8,13 @@ import com.example.gesture.DashboardPage
 import com.example.gesture.HandGestureClassifier
 import com.example.gesture.HandLandmarkPoint
 import com.example.gesture.SwipeDirection
+import com.example.mental.EmergencyDrill
 import com.example.mental.MentalBand
 import com.example.mental.MentalScenario
 import com.example.mental.MentalState
 import com.example.mental.MentalVitals
+import com.example.mental.SleepTrackerState
+import com.example.mental.StressLevel
 import com.example.voice.VoiceCommand
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
@@ -41,6 +44,7 @@ data class HudUiState(
   val coreTempCelsius: Float = 37.1f,
   val hydrationPercent: Int = 74,
   val hydrationLiters: Float = 1.4f,
+  val isBiometricSensorLost: Boolean = false,
   // Suit Systems (Lower-Right + Inferred Suit Status Page)
   val suitPressurePsi: Float = 4.3f,
   val oxygenPercent: Int = 88,
@@ -58,25 +62,31 @@ data class HudUiState(
   val mapPanEastDeg: Float = 0f,
   val mapPanNorthDeg: Float = 0f,
   val isMapPinching: Boolean = false,
-  // Cognitive Readiness (4th Page - Display Only)
+  // Cognitive (4th Page - Synced HR, Stress Level & Sleep Tracker)
   val mentalState: MentalState =
     MentalState(
-      heartRate = null,
-      o2Use = 0.0,
-      helmetCo2MmHg = 0.0,
-      score = null,
-      band = MentalBand.UNKNOWN,
+      heartRate = BASE_HR_BPM.toDouble(),
+      o2Use = 0.09,
+      helmetCo2MmHg = 1.8,
+      score = 96,
+      band = MentalBand.OK,
       label = null,
       askOk = false,
-      calibrated = false,
-      calibration = 0f,
+      calibrated = true,
+      calibration = 1.0f,
       needsWorkloadChange = false,
-      expectedHr = null,
-      additionalHr = null,
+      expectedHr = BASE_HR_BPM.toDouble(),
+      additionalHr = 0.0,
       hrPenalty = 0,
       co2Penalty = 0,
       scenario = MentalScenario.BASELINE,
+      stressPercent = 12,
+      stressLevel = StressLevel.LOW,
+      stressDriver = "NOMINAL",
+      sleepTracker = SleepTrackerState(),
     ),
+  // Emergency Drills (5th Page)
+  val activeDrill: EmergencyDrill = EmergencyDrill.NONE,
   // Gesture Controls
   val palmHoldProgress: Float = 0f,
   val isTwoFistsReady: Boolean = false,
@@ -128,8 +138,27 @@ class HudViewModel(
   private var totalDistanceMeters = 0f
   private var smoothedSpeedMps = 0f
   private var averagedHrBpm = HudUiState.BASE_HR_BPM
+  private var baseWindSpeedMps = 6.4f
+  private var baseRadiationMSv = 0.24f
+  private var baseSpo2Percent = 98
+  private var baseEvaSeconds = HudUiState.INITIAL_EVA_SECONDS
+  private var lastEvalMs = 1_000L
+
+  private fun safeElapsedRealtimeMs(): Long {
+    val raw =
+      try {
+        SystemClock.elapsedRealtime()
+      } catch (_: Throwable) {
+        0L
+      }
+    val next = if (raw > lastEvalMs) raw else lastEvalMs + 1_000L
+    lastEvalMs = next
+    return next
+  }
 
   init {
+    _uiState.update { state -> applyTelemetrySnapshot(state, nowMs = 0L) }
+
     if (enablePeriodicDecay) {
       viewModelScope.launch {
         val windCycle = floatArrayOf(6.4f, 6.5f, 6.4f, 6.3f, 6.4f, 6.6f, 6.5f, 6.4f)
@@ -141,33 +170,111 @@ class HudViewModel(
           if (tick % 3 == 0) {
             refreshLocationDerivedMetrics(SystemClock.uptimeMillis())
           }
-          val nextMental = mentalVitals.tick(SystemClock.elapsedRealtime())
-          _uiState.update { state ->
-            val nextEva = state.evaSeconds + 1
-            val cycleIdx = (tick / 3) % windCycle.size
-            val nextWind = if (tick % 3 == 0) windCycle[cycleIdx] else state.windSpeedMps
-            val nextRad = if (tick % 3 == 0) radCycle[cycleIdx] else state.radiationMSv
-            val nextSpo2 = if (tick % 12 == 6) 99 else 98
-            val (nextSys, nextDia) = computeBloodPressure(state.heartRateBpm.toFloat())
-            state.copy(
-              evaSeconds = nextEva,
-              windSpeedMps = nextWind,
-              radiationMSv = nextRad,
-              spo2Percent = nextSpo2,
-              systolicBp = nextSys,
-              diastolicBp = nextDia,
-              mentalState = nextMental,
-            )
+          synchronized(locationLock) {
+            baseEvaSeconds++
+            if (tick % 3 == 0) {
+              val cycleIdx = (tick / 3) % windCycle.size
+              baseWindSpeedMps = windCycle[cycleIdx]
+              baseRadiationMSv = radCycle[cycleIdx]
+            }
+            baseSpo2Percent = if (tick % 12 == 6) 99 else 98
           }
+          val nowMs = SystemClock.elapsedRealtime()
+          _uiState.update { state -> applyTelemetrySnapshot(state, nowMs) }
         }
       }
     }
   }
 
   internal fun stepMentalVitals(nowMs: Long = SystemClock.elapsedRealtime()) {
-    val nextMental = mentalVitals.tick(nowMs)
-    _uiState.update { it.copy(mentalState = nextMental) }
+    _uiState.update { state -> applyTelemetrySnapshot(state, nowMs) }
   }
+
+  private fun applyTelemetrySnapshot(state: HudUiState, nowMs: Long): HudUiState {
+    val (baseHr, speed, evaSecs, windBase, radBase, spo2Base) =
+      synchronized(locationLock) {
+        TelemetryBaselineSnapshot(
+          baseHrBpm = averagedHrBpm,
+          speedMps = smoothedSpeedMps,
+          evaSeconds = baseEvaSeconds,
+          windMps = baseWindSpeedMps,
+          radMSv = baseRadiationMSv,
+          spo2Percent = baseSpo2Percent,
+        )
+      }
+
+    val drill = state.activeDrill
+    val sensorLost = drill.sensorDropout
+    val effectiveHr = (baseHr + drill.hrOffsetBpm).roundToInt().coerceIn(50, 195)
+    val (effectiveSys, effectiveDia) = computeBloodPressure(effectiveHr.toFloat())
+    val effectiveSpo2 =
+      when {
+        sensorLost -> 0
+        drill == EmergencyDrill.EMERGENCY_1 ||
+          drill == EmergencyDrill.EMERGENCY_4 ||
+          drill == EmergencyDrill.EMERGENCY_10 -> 91
+        drill == EmergencyDrill.EMERGENCY_2 -> 88
+        else -> spo2Base
+      }
+    val effectiveTemp = (37.1f + drill.coreTempOffsetC).coerceIn(35.5f, 40.5f)
+    val effectiveHydrationPct = drill.hydrationPercentOverride ?: 74
+    val effectiveHydrationL = ((effectiveHydrationPct / 74f) * 1.4f).coerceIn(0.2f, 2.0f)
+
+    val effectivePressure = drill.suitPressureOverridePsi ?: 4.3f
+    val effectiveO2Pct = drill.oxygenPercentOverride ?: 88
+    val effectiveO2Hours = drill.oxygenHoursOverride ?: 3.8f
+    val effectivePwrPct = drill.suitPowerPercentOverride ?: 92
+    val effectivePwrHours = drill.suitPowerHoursOverride ?: 4.5f
+    val effectiveCo2 = drill.ppCo2OverrideMmHg ?: 1.8f
+    val effectiveRad = drill.radiationOverrideMSv ?: radBase
+    val effectiveWind = drill.windSpeedOverrideMps ?: windBase
+
+    val workload =
+      (0.09 +
+          (speed.coerceAtLeast(0f) / 10.0) * 0.08 +
+          if (drill == EmergencyDrill.EMERGENCY_7 || drill == EmergencyDrill.EMERGENCY_10) 0.03 else 0.0)
+        .coerceIn(0.05, 0.30)
+
+    val syncedMental =
+      mentalVitals.evaluate(
+        nowMs = nowMs,
+        syncedHeartRateBpm = if (sensorLost) null else effectiveHr.toDouble(),
+        workload = workload,
+        helmetCo2MmHg = effectiveCo2.toDouble(),
+        activeDrill = drill,
+        evaSeconds = evaSecs,
+      )
+
+    return state.copy(
+      heartRateBpm = effectiveHr,
+      systolicBp = effectiveSys,
+      diastolicBp = effectiveDia,
+      spo2Percent = effectiveSpo2,
+      coreTempCelsius = effectiveTemp,
+      hydrationPercent = effectiveHydrationPct,
+      hydrationLiters = effectiveHydrationL,
+      isBiometricSensorLost = sensorLost,
+      suitPressurePsi = effectivePressure,
+      oxygenPercent = effectiveO2Pct,
+      oxygenHours = effectiveO2Hours,
+      suitPowerPercent = effectivePwrPct,
+      suitPowerHours = effectivePwrHours,
+      ppCo2MmHg = effectiveCo2,
+      radiationMSv = effectiveRad,
+      windSpeedMps = effectiveWind,
+      evaSeconds = evaSecs,
+      mentalState = syncedMental,
+    )
+  }
+
+  private data class TelemetryBaselineSnapshot(
+    val baseHrBpm: Float,
+    val speedMps: Float,
+    val evaSeconds: Int,
+    val windMps: Float,
+    val radMSv: Float,
+    val spo2Percent: Int,
+  )
 
   fun onPermissionResult(granted: Boolean) {
     if (!granted) {
@@ -253,7 +360,7 @@ class HudViewModel(
     measuredSpeedMps: Float,
     timestampMs: Long = SystemClock.uptimeMillis(),
   ) {
-    val (nextDist, nextSpeed, nextHr) =
+    val (nextDist, nextSpeed) =
       synchronized(locationLock) {
         if (deltaMeters > 0f) {
           totalDistanceMeters += deltaMeters
@@ -268,24 +375,24 @@ class HudViewModel(
         val targetHr = computeTargetHeartRate(smoothedSpeedMps)
         averagedHrBpm += HR_SMOOTH_ALPHA * (targetHr - averagedHrBpm)
 
-        Triple(totalDistanceMeters, smoothedSpeedMps, averagedHrBpm.roundToInt())
+        totalDistanceMeters to smoothedSpeedMps
       }
 
-    val (nextSys, nextDia) = computeBloodPressure(nextHr.toFloat())
     _uiState.update { state ->
-      state.copy(
-        hasGpsFix = true,
-        distanceMeters = nextDist,
-        speedMps = nextSpeed,
-        heartRateBpm = nextHr,
-        systolicBp = nextSys,
-        diastolicBp = nextDia,
+      applyTelemetrySnapshot(
+        state =
+          state.copy(
+            hasGpsFix = true,
+            distanceMeters = nextDist,
+            speedMps = nextSpeed,
+          ),
+        nowMs = timestampMs,
       )
     }
   }
 
   fun refreshLocationDerivedMetrics(nowMs: Long = SystemClock.uptimeMillis()) {
-    val (nextSpeed, nextHr) =
+    val (nextSpeed, baseHr) =
       synchronized(locationLock) {
         val stale = lastLocationSampleMs == 0L || nowMs - lastLocationSampleMs > SPEED_STALE_MS
         if (stale) {
@@ -299,16 +406,14 @@ class HudViewModel(
         smoothedSpeedMps to averagedHrBpm.roundToInt()
       }
 
-    val (nextSys, nextDia) = computeBloodPressure(nextHr.toFloat())
     _uiState.update { state ->
-      if (state.speedMps == nextSpeed && state.heartRateBpm == nextHr) {
+      val expectedEffectiveHr = (baseHr + state.activeDrill.hrOffsetBpm).coerceIn(50, 195)
+      if (state.speedMps == nextSpeed && state.heartRateBpm == expectedEffectiveHr) {
         state
       } else {
-        state.copy(
-          speedMps = nextSpeed,
-          heartRateBpm = nextHr,
-          systolicBp = nextSys,
-          diastolicBp = nextDia,
+        applyTelemetrySnapshot(
+          state = state.copy(speedMps = nextSpeed),
+          nowMs = nowMs,
         )
       }
     }
@@ -482,6 +587,21 @@ class HudViewModel(
         VoiceCommand.NAVIGATE_COGNITIVE -> {
           if (currentMode != DashboardMode.CLOSED) {
             selectDashboardPage(DashboardPage.COGNITIVE)
+          }
+        }
+        VoiceCommand.NAVIGATE_DRILLS -> {
+          if (currentMode != DashboardMode.CLOSED) {
+            selectDashboardPage(DashboardPage.DRILLS)
+          }
+        }
+        is VoiceCommand.RunEmergency -> {
+          val drill = EmergencyDrill.fromNumber(command.number) ?: return
+          val evalTimeMs = safeElapsedRealtimeMs()
+          _uiState.update { state ->
+            applyTelemetrySnapshot(
+              state = state.copy(activeDrill = drill),
+              nowMs = evalTimeMs,
+            )
           }
         }
         VoiceCommand.MAP_ZOOM_IN -> {

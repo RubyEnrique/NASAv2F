@@ -85,8 +85,9 @@ import com.example.gesture.DashboardMode
 import com.example.gesture.DashboardPage
 import com.example.gesture.HandLandmarkPoint
 import com.example.gesture.SwipeDirection
-import com.example.mental.MentalBand
+import com.example.mental.EmergencyDrill
 import com.example.mental.MentalState
+import com.example.mental.StressLevel
 import com.example.ui.theme.IosGlassHairline
 import com.example.ui.theme.IosLabelPrimary
 import com.example.ui.theme.IosLabelSecondary
@@ -173,6 +174,7 @@ fun SpatialHudScreen(
           spo2Percent = uiState.spo2Percent,
           coreTempCelsius = uiState.coreTempCelsius,
           hydrationPercent = uiState.hydrationPercent,
+          isBiometricSensorLost = uiState.isBiometricSensorLost,
           modifier =
             Modifier.align(Alignment.BottomStart)
               .padding(start = 16.dp, bottom = 14.dp)
@@ -579,6 +581,7 @@ private fun VisionTriDashboard(
                 )
               DashboardPage.SUIT_STATUS -> InferredSuitStatusDashboardPage(uiState = uiState)
               DashboardPage.COGNITIVE -> CognitiveDashboardPage(mentalState = uiState.mentalState)
+              DashboardPage.DRILLS -> DrillsDashboardPage(activeDrill = uiState.activeDrill)
             }
           }
 
@@ -633,20 +636,34 @@ private fun VisionTriDashboard(
 
 @Composable
 private fun InferredVitalsDashboardPage(uiState: HudUiState) {
+  val sensorLost = uiState.isBiometricSensorLost
   val (overallLabel, overallColor) =
     when {
+      sensorLost -> "SIGNAL LOST" to IosSfRed
       uiState.heartRateBpm >= 135 || uiState.systolicBp >= 140 -> "ELEVATED" to IosSfAmber
       uiState.heartRateBpm >= 105 || uiState.speedMps >= 1.0f -> "ACTIVE" to IosSfBlue
       else -> "NOMINAL" to IosSfGreen
     }
   val exertionZone =
     when {
+      sensorLost -> "OFFLINE"
       uiState.heartRateBpm >= 135 -> "PEAK"
       uiState.heartRateBpm >= 105 -> "AEROBIC"
       else -> "RESTING"
     }
-  val bpClassification = if (uiState.systolicBp >= 135) "EXERTION" else "NORMOTENSIVE"
-  val spo2Classification = if (uiState.spo2Percent >= 95) "OPTIMAL" else "LOW"
+  val bpClassification =
+    when {
+      sensorLost -> "OFFLINE"
+      uiState.systolicBp >= 135 -> "EXERTION"
+      else -> "NORMOTENSIVE"
+    }
+  val spo2Classification =
+    when {
+      sensorLost -> "OFFLINE"
+      uiState.spo2Percent >= 95 -> "OPTIMAL"
+      else -> "LOW"
+    }
+  val tempClassification = if (uiState.coreTempCelsius >= 38.0f) "ELEVATED" else "THERMAL OK"
   val hydrationClassification = if (uiState.hydrationPercent >= 60) "HYDRATED" else "LOW"
   val coreText = String.format(Locale.US, "%.1f\u00B0C", uiState.coreTempCelsius)
   val hydrationValue = String.format(Locale.US, "%d%% · %.1fL", uiState.hydrationPercent, uiState.hydrationLiters)
@@ -689,16 +706,21 @@ private fun InferredVitalsDashboardPage(uiState: HudUiState) {
     ) {
       DashboardMetricCard(
         label = "HEART RATE",
-        value = "${uiState.heartRateBpm} BPM",
+        value = if (sensorLost) "--" else "${uiState.heartRateBpm} BPM",
         inference = exertionZone,
-        accentColor = IosSfPink,
+        accentColor = if (sensorLost) IosLabelSecondary else IosSfPink,
         modifier = Modifier.weight(1f).fillMaxHeight(),
       )
       DashboardMetricCard(
         label = "BLOOD PRESSURE",
-        value = "${uiState.systolicBp}/${uiState.diastolicBp} mmHg",
+        value = if (sensorLost) "--/--" else "${uiState.systolicBp}/${uiState.diastolicBp} mmHg",
         inference = bpClassification,
-        accentColor = if (uiState.systolicBp >= 135) IosSfAmber else IosLabelPrimary,
+        accentColor =
+          when {
+            sensorLost -> IosLabelSecondary
+            uiState.systolicBp >= 135 -> IosSfAmber
+            else -> IosLabelPrimary
+          },
         modifier = Modifier.weight(1f).fillMaxHeight(),
       )
     }
@@ -709,23 +731,28 @@ private fun InferredVitalsDashboardPage(uiState: HudUiState) {
     ) {
       DashboardMetricCard(
         label = "SpO\u2082",
-        value = "${uiState.spo2Percent}%",
+        value = if (sensorLost) "--" else "${uiState.spo2Percent}%",
         inference = spo2Classification,
-        accentColor = IosSfBlue,
+        accentColor =
+          when {
+            sensorLost -> IosLabelSecondary
+            uiState.spo2Percent < 93 -> IosSfRed
+            else -> IosSfBlue
+          },
         modifier = Modifier.weight(1f).fillMaxHeight(),
       )
       DashboardMetricCard(
         label = "CORE TEMP",
         value = coreText,
-        inference = "THERMAL OK",
-        accentColor = IosSfGreen,
+        inference = tempClassification,
+        accentColor = if (uiState.coreTempCelsius >= 38.0f) IosSfAmber else IosSfGreen,
         modifier = Modifier.weight(1f).fillMaxHeight(),
       )
       DashboardMetricCard(
         label = "H\u2082O",
         value = hydrationValue,
         inference = hydrationClassification,
-        accentColor = IosSfIndigo,
+        accentColor = if (uiState.hydrationPercent < 35) IosSfRed else IosSfIndigo,
         modifier = Modifier.weight(1f).fillMaxHeight(),
       )
     }
@@ -735,6 +762,7 @@ private fun InferredVitalsDashboardPage(uiState: HudUiState) {
 @Composable
 private fun InferredSuitStatusDashboardPage(uiState: HudUiState) {
   val pressureOk = uiState.suitPressurePsi in 3.8f..4.6f
+  val o2Low = uiState.oxygenPercent < 25
   val isLowPower = uiState.isSuitLowPower
   val radElevated = uiState.radiationMSv >= 0.50f
   val co2Elevated = uiState.ppCo2MmHg >= 3.0f
@@ -742,7 +770,10 @@ private fun InferredSuitStatusDashboardPage(uiState: HudUiState) {
   val (overallLabel, overallColor) =
     when {
       !pressureOk -> "PRESSURE WARN" to IosSfRed
+      o2Low -> "O\u2082 LOW" to IosSfRed
       isLowPower -> "LOW POWER" to IosSfRed
+      uiState.ppCo2MmHg >= 6.0f -> "CO\u2082 CRITICAL" to IosSfRed
+      uiState.radiationMSv >= 1.0f -> "RAD CRITICAL" to IosSfRed
       radElevated -> "RAD ADVISORY" to IosSfAmber
       co2Elevated -> "CO\u2082 HIGH" to IosSfAmber
       else -> "SEALED · NOMINAL" to IosSfGreen
@@ -751,7 +782,7 @@ private fun InferredSuitStatusDashboardPage(uiState: HudUiState) {
   val evaMin = uiState.evaSeconds / 60
   val evaSec = uiState.evaSeconds % 60
   val evaFormatted = "${evaMin.toString().padStart(2, '0')}:${evaSec.toString().padStart(2, '0')}"
-  val pwrHours = if (isLowPower) 0.8f else uiState.suitPowerHours
+  val pwrHours = uiState.suitPowerHours
   val windText = String.format(Locale.US, "%.1f m/s", uiState.windSpeedMps)
   val radText = String.format(Locale.US, "%.2f mSv", uiState.radiationMSv)
   val pressureText = String.format(Locale.US, "%.1f psi", uiState.suitPressurePsi)
@@ -805,8 +836,8 @@ private fun InferredSuitStatusDashboardPage(uiState: HudUiState) {
       DashboardMetricCard(
         label = "O\u2082 RESERVE",
         value = o2Text,
-        inference = if (uiState.oxygenPercent >= 25) "NOMINAL" else "LOW",
-        accentColor = IosSfBlue,
+        inference = if (o2Low) "LOW" else "NOMINAL",
+        accentColor = if (o2Low) IosSfRed else IosSfBlue,
         modifier = Modifier.weight(1f).fillMaxHeight(),
       )
       DashboardMetricCard(
@@ -826,21 +857,31 @@ private fun InferredSuitStatusDashboardPage(uiState: HudUiState) {
         label = "RADIATION",
         value = radText,
         inference = if (radElevated) "ELEVATED" else "SAFE",
-        accentColor = IosSfAmber,
+        accentColor = if (uiState.radiationMSv >= 1.0f) IosSfRed else IosSfAmber,
         modifier = Modifier.weight(1f).fillMaxHeight(),
       )
       DashboardMetricCard(
         label = "ppCO\u2082",
         value = co2Text,
         inference = if (co2Elevated) "HIGH" else "SCRUB OK",
-        accentColor = if (co2Elevated) IosSfAmber else IosSfGreen,
+        accentColor =
+          when {
+            uiState.ppCo2MmHg >= 6.0f -> IosSfRed
+            co2Elevated -> IosSfAmber
+            else -> IosSfGreen
+          },
         modifier = Modifier.weight(1f).fillMaxHeight(),
       )
       DashboardMetricCard(
         label = "WIND",
         value = windText,
-        inference = if (uiState.windSpeedMps < 10f) "CALM" else "GUSTS",
-        accentColor = IosLabelPrimary,
+        inference =
+          when {
+            uiState.windSpeedMps >= 18f -> "GALE"
+            uiState.windSpeedMps >= 10f -> "GUSTS"
+            else -> "CALM"
+          },
+        accentColor = if (uiState.windSpeedMps >= 15f) IosSfAmber else IosLabelPrimary,
         modifier = Modifier.weight(1f).fillMaxHeight(),
       )
       DashboardMetricCard(
@@ -856,18 +897,31 @@ private fun InferredSuitStatusDashboardPage(uiState: HudUiState) {
 
 @Composable
 private fun CognitiveDashboardPage(mentalState: MentalState) {
-  val (bandLabel, bandColor) =
-    when (mentalState.band) {
-      MentalBand.OK -> "OK" to IosSfGreen
-      MentalBand.CAUTION -> "CAUTION" to IosSfAmber
-      MentalBand.WARNING -> "WARNING" to IosSfRed
-      MentalBand.UNKNOWN -> "CALIBRATING" to IosLabelSecondary
+  val (stressLabel, stressColor) =
+    when (mentalState.stressLevel) {
+      StressLevel.LOW -> "LOW" to IosSfGreen
+      StressLevel.MODERATE -> "MODERATE" to IosSfAmber
+      StressLevel.HIGH -> "HIGH" to IosSfAmber
+      StressLevel.CRITICAL -> "CRITICAL" to IosSfRed
+      StressLevel.UNKNOWN -> "SENSOR LOSS" to IosLabelSecondary
     }
-  val scoreText = mentalState.score?.toString() ?: "--"
-  val scoreColor = if (mentalState.band == MentalBand.UNKNOWN) IosLabelPrimary else bandColor
-  val calibrationProgress = mentalState.calibration.coerceIn(0f, 1f)
-  val calibrationPercent = (calibrationProgress * 100f).roundToInt()
+  val stressValueText =
+    if (mentalState.stressLevel == StressLevel.UNKNOWN) "--" else "${mentalState.stressPercent}%"
+  val stressProgress =
+    if (mentalState.stressLevel == StressLevel.UNKNOWN) 0f
+    else (mentalState.stressPercent / 100f).coerceIn(0.05f, 1f)
   val hrText = mentalState.heartRate?.let { "${it.roundToInt()} BPM" } ?: "--"
+
+  val sleep = mentalState.sleepTracker
+  val sleepDurationText = String.format(Locale.US, "%.1fh", sleep.durationHours)
+  val sleepStagesText = "DEEP ${sleep.deepMinutes}m · REM ${sleep.remMinutes}m"
+  val sleepAccent =
+    when (sleep.sleepStatus) {
+      "DEPRIVED" -> IosSfRed
+      "FATIGUED" -> IosSfAmber
+      else -> IosSfIndigo
+    }
+
   val cardShape = RoundedCornerShape(18.dp)
 
   Column(
@@ -894,8 +948,8 @@ private fun CognitiveDashboardPage(mentalState: MentalState) {
           ),
       )
       StatusBadgePill(
-        text = bandLabel,
-        color = bandColor,
+        text = stressLabel,
+        color = stressColor,
         tag = "cognitive_status_pill",
       )
     }
@@ -904,21 +958,21 @@ private fun CognitiveDashboardPage(mentalState: MentalState) {
 
     Row(
       modifier = Modifier.fillMaxWidth().weight(1f),
-      horizontalArrangement = Arrangement.spacedBy(12.dp),
+      horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
       Column(
         modifier =
-          Modifier.weight(1.2f)
+          Modifier.weight(1.08f)
             .fillMaxHeight()
-            .testTag("cognitive_readiness_card")
+            .testTag("cognitive_stress_card")
             .clip(cardShape)
             .background(ObsidianBlack.copy(alpha = 0.24f))
             .border(width = 0.6.dp, color = SpecularWhite.copy(alpha = 0.18f), shape = cardShape)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
+            .padding(horizontal = 13.dp, vertical = 11.dp),
         verticalArrangement = Arrangement.SpaceBetween,
       ) {
         Text(
-          text = "READY",
+          text = "STRESS LEVEL",
           style =
             TextStyle(
               color = IosLabelSecondary,
@@ -929,64 +983,58 @@ private fun CognitiveDashboardPage(mentalState: MentalState) {
             ),
         )
         Text(
-          text = scoreText,
+          text = stressValueText,
           style =
             TextStyle(
-              color = scoreColor,
+              color = stressColor,
               fontFamily = FontFamily.SansSerif,
               fontWeight = FontWeight.SemiBold,
-              fontSize = 36.sp,
+              fontSize = 28.sp,
               fontFeatureSettings = "tnum",
             ),
-          modifier = Modifier.testTag("cognitive_score_text"),
+          modifier = Modifier.testTag("cognitive_stress_text"),
         )
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
           Box(
             modifier =
               Modifier.fillMaxWidth()
                 .height(6.dp)
                 .clip(CircleShape)
                 .background(SpecularWhite.copy(alpha = 0.14f))
-                .testTag("cognitive_calibration_bar"),
+                .testTag("cognitive_stress_bar"),
           ) {
             Box(
               modifier =
-                Modifier.fillMaxWidth(calibrationProgress)
+                Modifier.fillMaxWidth(stressProgress)
                   .fillMaxHeight()
                   .clip(CircleShape)
-                  .background(if (mentalState.calibrated) bandColor else IosSfBlue),
+                  .background(stressColor),
             )
           }
           Text(
-            text =
-              if (mentalState.calibrated) {
-                "CALIBRATED"
-              } else {
-                "CALIBRATION $calibrationPercent%"
-              },
+            text = mentalState.stressDriver,
             style =
               TextStyle(
                 color = IosLabelSecondary,
                 fontFamily = FontFamily.SansSerif,
                 fontWeight = FontWeight.Medium,
                 fontSize = 9.sp,
-                fontFeatureSettings = "tnum",
                 letterSpacing = 0.4.sp,
               ),
-            modifier = Modifier.testTag("cognitive_calibration_text"),
+            modifier = Modifier.testTag("cognitive_stress_driver_text"),
           )
         }
       }
 
       Column(
         modifier =
-          Modifier.weight(1f)
+          Modifier.weight(0.92f)
             .fillMaxHeight()
             .testTag("cognitive_hr_card")
             .clip(cardShape)
             .background(ObsidianBlack.copy(alpha = 0.24f))
             .border(width = 0.6.dp, color = SpecularWhite.copy(alpha = 0.18f), shape = cardShape)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
+            .padding(horizontal = 13.dp, vertical = 11.dp),
         verticalArrangement = Arrangement.SpaceBetween,
       ) {
         Text(
@@ -1007,13 +1055,13 @@ private fun CognitiveDashboardPage(mentalState: MentalState) {
               color = if (mentalState.heartRate != null) IosSfPink else IosLabelSecondary,
               fontFamily = FontFamily.SansSerif,
               fontWeight = FontWeight.SemiBold,
-              fontSize = 24.sp,
+              fontSize = 22.sp,
               fontFeatureSettings = "tnum",
             ),
           modifier = Modifier.testTag("cognitive_hr_text"),
         )
         Text(
-          text = "BASELINE",
+          text = if (mentalState.heartRate != null) "VITALS SYNC" else "SIGNAL LOST",
           style =
             TextStyle(
               color = IosLabelSecondary,
@@ -1024,7 +1072,256 @@ private fun CognitiveDashboardPage(mentalState: MentalState) {
             ),
         )
       }
+
+      Column(
+        modifier =
+          Modifier.weight(1.12f)
+            .fillMaxHeight()
+            .testTag("cognitive_sleep_card")
+            .clip(cardShape)
+            .background(ObsidianBlack.copy(alpha = 0.24f))
+            .border(width = 0.6.dp, color = SpecularWhite.copy(alpha = 0.18f), shape = cardShape)
+            .padding(horizontal = 13.dp, vertical = 11.dp),
+        verticalArrangement = Arrangement.SpaceBetween,
+      ) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Text(
+            text = "SLEEP TRACKER",
+            style =
+              TextStyle(
+                color = IosLabelSecondary,
+                fontFamily = FontFamily.SansSerif,
+                fontWeight = FontWeight.Medium,
+                fontSize = 9.sp,
+                letterSpacing = 0.5.sp,
+              ),
+          )
+          Text(
+            text = "${sleep.qualityPercent}%",
+            style =
+              TextStyle(
+                color = sleepAccent,
+                fontFamily = FontFamily.SansSerif,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 10.sp,
+                fontFeatureSettings = "tnum",
+              ),
+          )
+        }
+        Text(
+          text = sleepDurationText,
+          style =
+            TextStyle(
+              color = IosLabelPrimary,
+              fontFamily = FontFamily.SansSerif,
+              fontWeight = FontWeight.SemiBold,
+              fontSize = 26.sp,
+              fontFeatureSettings = "tnum",
+            ),
+          modifier = Modifier.testTag("cognitive_sleep_text"),
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+          Text(
+            text = sleepStagesText,
+            style =
+              TextStyle(
+                color = IosLabelSecondary,
+                fontFamily = FontFamily.SansSerif,
+                fontWeight = FontWeight.Medium,
+                fontSize = 8.5.sp,
+                fontFeatureSettings = "tnum",
+              ),
+          )
+          Text(
+            text = sleep.sleepStatus,
+            style =
+              TextStyle(
+                color = sleepAccent,
+                fontFamily = FontFamily.SansSerif,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 9.sp,
+                letterSpacing = 0.4.sp,
+              ),
+            modifier = Modifier.testTag("cognitive_sleep_status_text"),
+          )
+        }
+      }
     }
+  }
+}
+
+@Composable
+private fun DrillsDashboardPage(activeDrill: EmergencyDrill) {
+  val drills = EmergencyDrill.activeDrills
+  val pillColor =
+    when {
+      activeDrill == EmergencyDrill.NONE -> IosLabelSecondary
+      activeDrill.isCritical -> IosSfRed
+      else -> IosSfAmber
+    }
+  val pillLabel =
+    if (activeDrill == EmergencyDrill.NONE) "STANDBY" else "${activeDrill.code} ACTIVE"
+
+  Column(
+    modifier =
+      Modifier.fillMaxSize()
+        .padding(horizontal = 18.dp, vertical = 12.dp)
+        .testTag("dashboard_page_drills"),
+    verticalArrangement = Arrangement.spacedBy(7.dp),
+  ) {
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Text(
+          text = "DRILLS",
+          style =
+            TextStyle(
+              color = IosLabelPrimary,
+              fontFamily = FontFamily.SansSerif,
+              fontWeight = FontWeight.SemiBold,
+              fontSize = 15.sp,
+              letterSpacing = 0.6.sp,
+            ),
+        )
+        Text(
+          text = "VOICE: EMERGENCY 1-10",
+          style =
+            TextStyle(
+              color = IosLabelSecondary,
+              fontFamily = FontFamily.SansSerif,
+              fontWeight = FontWeight.Medium,
+              fontSize = 8.5.sp,
+              letterSpacing = 0.4.sp,
+            ),
+        )
+      }
+      StatusBadgePill(
+        text = pillLabel,
+        color = pillColor,
+        tag = "drills_status_pill",
+      )
+    }
+
+    Box(modifier = Modifier.fillMaxWidth().height(0.5.dp).background(IosGlassHairline))
+
+    Column(
+      modifier = Modifier.fillMaxWidth().weight(1f),
+      verticalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+      val rowCount = (drills.size + 1) / 2
+      for (rowIdx in 0 until rowCount) {
+        val leftDrill = drills[rowIdx]
+        val rightIdx = rowIdx + rowCount
+        val rightDrill = if (rightIdx < drills.size) drills[rightIdx] else null
+        Row(
+          modifier = Modifier.fillMaxWidth().weight(1f),
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+          DrillSlotCard(
+            drill = leftDrill,
+            isActive = activeDrill == leftDrill,
+            modifier = Modifier.weight(1f).fillMaxHeight(),
+          )
+          if (rightDrill != null) {
+            DrillSlotCard(
+              drill = rightDrill,
+              isActive = activeDrill == rightDrill,
+              modifier = Modifier.weight(1f).fillMaxHeight(),
+            )
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun DrillSlotCard(
+  drill: EmergencyDrill,
+  isActive: Boolean,
+  modifier: Modifier = Modifier,
+) {
+  val cardShape = RoundedCornerShape(12.dp)
+  val accentColor =
+    when {
+      isActive && drill.isCritical -> IosSfRed
+      isActive -> IosSfAmber
+      else -> SpecularWhite.copy(alpha = 0.70f)
+    }
+  val bgColor =
+    if (isActive) {
+      accentColor.copy(alpha = 0.22f)
+    } else {
+      ObsidianBlack.copy(alpha = 0.24f)
+    }
+  val borderColor =
+    if (isActive) {
+      accentColor.copy(alpha = 0.85f)
+    } else {
+      SpecularWhite.copy(alpha = 0.16f)
+    }
+
+  Row(
+    modifier =
+      modifier
+        .testTag("drill_item_${drill.number}")
+        .clip(cardShape)
+        .background(bgColor)
+        .border(width = if (isActive) 1.dp else 0.55.dp, color = borderColor, shape = cardShape)
+        .padding(horizontal = 9.dp, vertical = 4.dp),
+    verticalAlignment = Alignment.CenterVertically,
+    horizontalArrangement = Arrangement.SpaceBetween,
+  ) {
+    Row(
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(6.dp),
+      modifier = Modifier.weight(1f),
+    ) {
+      Text(
+        text = "E${drill.number}",
+        style =
+          TextStyle(
+            color = if (isActive) accentColor else IosSfBlue,
+            fontFamily = FontFamily.SansSerif,
+            fontWeight = FontWeight.Bold,
+            fontSize = 10.sp,
+            fontFeatureSettings = "tnum",
+          ),
+      )
+      Text(
+        text = drill.title,
+        maxLines = 1,
+        style =
+          TextStyle(
+            color = IosLabelPrimary,
+            fontFamily = FontFamily.SansSerif,
+            fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Medium,
+            fontSize = 10.sp,
+          ),
+      )
+    }
+    Text(
+      text = drill.impactSummary,
+      maxLines = 1,
+      style =
+        TextStyle(
+          color = if (isActive) accentColor else IosLabelSecondary,
+          fontFamily = FontFamily.SansSerif,
+          fontWeight = FontWeight.Medium,
+          fontSize = 8.5.sp,
+          fontFeatureSettings = "tnum",
+        ),
+    )
   }
 }
 

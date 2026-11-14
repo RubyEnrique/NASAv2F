@@ -19,17 +19,19 @@ import org.vosk.Recognizer
 import org.vosk.android.RecognitionListener
 import org.vosk.android.SpeechService
 
-enum class VoiceCommand {
-  TOGGLE_QUICK,
-  OPEN_PERMANENT,
-  CLOSE_PERMANENT,
-  NAVIGATE_VITALS,
-  NAVIGATE_MAP,
-  NAVIGATE_SUIT,
-  NAVIGATE_COGNITIVE,
-  MAP_ZOOM_IN,
-  MAP_ZOOM_OUT,
-  MAP_RECENTER,
+sealed interface VoiceCommand {
+  data object TOGGLE_QUICK : VoiceCommand
+  data object OPEN_PERMANENT : VoiceCommand
+  data object CLOSE_PERMANENT : VoiceCommand
+  data object NAVIGATE_VITALS : VoiceCommand
+  data object NAVIGATE_MAP : VoiceCommand
+  data object NAVIGATE_SUIT : VoiceCommand
+  data object NAVIGATE_COGNITIVE : VoiceCommand
+  data object NAVIGATE_DRILLS : VoiceCommand
+  data object MAP_ZOOM_IN : VoiceCommand
+  data object MAP_ZOOM_OUT : VoiceCommand
+  data object MAP_RECENTER : VoiceCommand
+  data class RunEmergency(val number: Int) : VoiceCommand
 }
 
 class VoiceCommandRecognizer(
@@ -404,9 +406,11 @@ class VoiceCommandRecognizer(
         VoiceCommand.NAVIGATE_MAP,
         VoiceCommand.NAVIGATE_SUIT,
         VoiceCommand.NAVIGATE_COGNITIVE,
+        VoiceCommand.NAVIGATE_DRILLS,
         VoiceCommand.MAP_ZOOM_IN,
         VoiceCommand.MAP_ZOOM_OUT,
-        VoiceCommand.MAP_RECENTER -> {
+        VoiceCommand.MAP_RECENTER,
+        is VoiceCommand.RunEmergency -> {
           cancelPendingQuickToggle()
           emitWithDebounce(command)
         }
@@ -452,7 +456,30 @@ class VoiceCommandRecognizer(
     private const val PARTIAL_DISAMBIGUATION_DELAY_MS = 550L
 
     private const val COMMAND_GRAMMAR =
-      "[\"dashboard\", \"dashboard open\", \"dashboard close\", \"open dashboard\", \"close dashboard\", \"vitals\", \"map\", \"meter\", \"suit\", \"suit status\", \"cognitive\", \"readiness\", \"zoom in\", \"zoom out\", \"recenter\", \"center map\", \"reset map\", \"[unk]\"]"
+      "[\"dashboard\", \"dashboard open\", \"dashboard close\", \"open dashboard\", \"close dashboard\", \"vitals\", \"map\", \"meter\", \"suit\", \"suit status\", \"cognitive\", \"readiness\", \"drills\", \"drill\", \"emergencies\", \"emergency\", \"emergency zero\", \"emergency one\", \"emergency two\", \"emergency three\", \"emergency four\", \"emergency five\", \"emergency six\", \"emergency seven\", \"emergency eight\", \"emergency nine\", \"emergency ten\", \"clear drill\", \"stop drill\", \"reset drills\", \"zoom in\", \"zoom out\", \"recenter\", \"center map\", \"reset map\", \"[unk]\"]"
+
+    private val EMERGENCY_PATTERN =
+      Regex("\\bemergency\\s+(10|ten|9|nine|8|eight|7|seven|6|six|5|five|4|four|3|three|2|two|1|one|0|zero)\\b")
+
+    private val CLEAR_DRILL_PATTERN =
+      Regex("\\b(clear drills?|stop drills?|reset drills?)\\b")
+
+    private fun parseEmergencyNumberToken(token: String): Int? {
+      return when (token) {
+        "0", "zero" -> 0
+        "1", "one" -> 1
+        "2", "two" -> 2
+        "3", "three" -> 3
+        "4", "four" -> 4
+        "5", "five" -> 5
+        "6", "six" -> 6
+        "7", "seven" -> 7
+        "8", "eight" -> 8
+        "9", "nine" -> 9
+        "10", "ten" -> 10
+        else -> null
+      }
+    }
 
     internal fun extractTranscript(hypothesisJson: String?, key: String): String {
       if (hypothesisJson.isNullOrBlank()) return ""
@@ -470,6 +497,15 @@ class VoiceCommandRecognizer(
 
       if (normalized.isEmpty()) return null
 
+      if (CLEAR_DRILL_PATTERN.containsMatchIn(normalized)) {
+        return VoiceCommand.RunEmergency(0)
+      }
+
+      EMERGENCY_PATTERN.find(normalized)?.let { match ->
+        val num = parseEmergencyNumberToken(match.groupValues[1])
+        if (num != null) return VoiceCommand.RunEmergency(num)
+      }
+
       return when {
         normalized.contains("dashboard open") || normalized.contains("open dashboard") ->
           VoiceCommand.OPEN_PERMANENT
@@ -484,6 +520,8 @@ class VoiceCommandRecognizer(
         Regex("\\bsuit\\b").containsMatchIn(normalized) -> VoiceCommand.NAVIGATE_SUIT
         Regex("\\b(cognitive|readiness)\\b").containsMatchIn(normalized) ->
           VoiceCommand.NAVIGATE_COGNITIVE
+        Regex("\\b(drills?|emergencies)\\b").containsMatchIn(normalized) ->
+          VoiceCommand.NAVIGATE_DRILLS
         Regex("\\bdashboard\\b").containsMatchIn(normalized) -> VoiceCommand.TOGGLE_QUICK
         else -> null
       }

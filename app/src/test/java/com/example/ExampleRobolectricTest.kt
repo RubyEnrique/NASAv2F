@@ -324,24 +324,93 @@ class ExampleRobolectricTest {
   }
 
   @Test
-  fun cognitiveDashboardPage_displaysCalibratingAndReadyBandStatesOnly() {
-    val calibratingState =
+  fun cognitiveDashboardPage_displaysStressSleepSyncedHrWithoutReadyOrCalibration() {
+    val highStressState =
       com.example.mental.MentalState(
-        heartRate = 79.4,
-        o2Use = 0.11,
-        helmetCo2MmHg = 1.2,
+        heartRate = 132.0,
+        o2Use = 0.14,
+        helmetCo2MmHg = 2.6,
+        score = 60,
+        band = com.example.mental.MentalBand.CAUTION,
+        label = null,
+        askOk = false,
+        calibrated = true,
+        calibration = 1.0f,
+        needsWorkloadChange = false,
+        expectedHr = 92.0,
+        additionalHr = 40.0,
+        hrPenalty = 30,
+        co2Penalty = 0,
+        scenario = com.example.mental.MentalScenario.BASELINE,
+        stressPercent = 76,
+        stressLevel = com.example.mental.StressLevel.HIGH,
+        stressDriver = "ACUTE STRESS",
+        sleepTracker =
+          com.example.mental.SleepTrackerState(
+            durationHours = 5.8f,
+            qualityPercent = 62,
+            deepMinutes = 74,
+            remMinutes = 68,
+            sleepStatus = "FATIGUED",
+          ),
+      )
+
+    composeTestRule.setContent {
+      SpatialHudTheme {
+        SpatialHudScreen(
+          uiState =
+            HudUiState(
+              hasCameraPermission = true,
+              heartRateBpm = 132,
+              dashboardMode = com.example.gesture.DashboardMode.PERMANENT,
+              currentPage = com.example.gesture.DashboardPage.COGNITIVE,
+              mentalState = highStressState,
+            ),
+          onRequestPermission = {},
+          onHandsDetected = { _, _ -> },
+          onInvisibleCornerTap = {},
+        )
+      }
+    }
+
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("dashboard_page_cognitive").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("cognitive_status_pill").assertTextEquals("HIGH")
+    composeTestRule.onNodeWithTag("cognitive_stress_text").assertTextEquals("76%")
+    composeTestRule.onNodeWithTag("cognitive_stress_driver_text").assertTextEquals("ACUTE STRESS")
+    composeTestRule.onNodeWithTag("cognitive_hr_text").assertTextEquals("132 BPM")
+    composeTestRule.onNodeWithTag("cognitive_sleep_text").assertTextEquals("5.8h")
+    composeTestRule.onNodeWithTag("cognitive_sleep_status_text").assertTextEquals("FATIGUED")
+    composeTestRule.onNodeWithTag("vitals_bpm_text").assertTextEquals("132")
+
+    // Verify READY and CALIBRATION UI elements were cleanly removed
+    composeTestRule.onNodeWithTag("cognitive_score_text").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("cognitive_calibration_bar").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("cognitive_calibration_text").assertDoesNotExist()
+  }
+
+  @Test
+  fun drillsDashboardPage_displaysAllTenEmergenciesAndSensorDropoutState() {
+    val sensorLossMental =
+      com.example.mental.MentalState(
+        heartRate = null,
+        o2Use = 0.09,
+        helmetCo2MmHg = 1.8,
         score = null,
         band = com.example.mental.MentalBand.UNKNOWN,
-        label = "[Readiness Low]",
-        askOk = true,
-        calibrated = false,
-        calibration = 0.42f,
+        label = null,
+        askOk = false,
+        calibrated = true,
+        calibration = 1.0f,
         needsWorkloadChange = false,
         expectedHr = null,
         additionalHr = null,
         hrPenalty = 0,
         co2Penalty = 0,
         scenario = com.example.mental.MentalScenario.BASELINE,
+        stressPercent = 0,
+        stressLevel = com.example.mental.StressLevel.UNKNOWN,
+        stressDriver = "SENSOR LOSS",
       )
 
     composeTestRule.setContent {
@@ -350,9 +419,11 @@ class ExampleRobolectricTest {
           uiState =
             HudUiState(
               hasCameraPermission = true,
+              isBiometricSensorLost = true,
+              activeDrill = com.example.mental.EmergencyDrill.EMERGENCY_9,
               dashboardMode = com.example.gesture.DashboardMode.PERMANENT,
-              currentPage = com.example.gesture.DashboardPage.COGNITIVE,
-              mentalState = calibratingState,
+              currentPage = com.example.gesture.DashboardPage.DRILLS,
+              mentalState = sensorLossMental,
             ),
           onRequestPermission = {},
           onHandsDetected = { _, _ -> },
@@ -362,57 +433,12 @@ class ExampleRobolectricTest {
     }
 
     composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("dashboard_page_cognitive").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("cognitive_status_pill").assertTextEquals("CALIBRATING")
-    composeTestRule.onNodeWithTag("cognitive_score_text").assertTextEquals("--")
-    composeTestRule.onNodeWithTag("cognitive_calibration_bar").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("cognitive_calibration_text").assertTextEquals("CALIBRATION 42%")
-    composeTestRule.onNodeWithTag("cognitive_hr_text").assertTextEquals("79 BPM")
-  }
-
-  @Test
-  fun cognitiveDashboardPage_displaysOkScoreWhenCalibrated() {
-    val okState =
-      com.example.mental.MentalState(
-        heartRate = 84.2,
-        o2Use = 0.13,
-        helmetCo2MmHg = 1.4,
-        score = 94,
-        band = com.example.mental.MentalBand.OK,
-        label = null,
-        askOk = false,
-        calibrated = true,
-        calibration = 1.0f,
-        needsWorkloadChange = false,
-        expectedHr = 83.0,
-        additionalHr = 1.2,
-        hrPenalty = 0,
-        co2Penalty = 0,
-        scenario = com.example.mental.MentalScenario.BASELINE,
-      )
-
-    composeTestRule.setContent {
-      SpatialHudTheme {
-        SpatialHudScreen(
-          uiState =
-            HudUiState(
-              hasCameraPermission = true,
-              dashboardMode = com.example.gesture.DashboardMode.PERMANENT,
-              currentPage = com.example.gesture.DashboardPage.COGNITIVE,
-              mentalState = okState,
-            ),
-          onRequestPermission = {},
-          onHandsDetected = { _, _ -> },
-          onInvisibleCornerTap = {},
-        )
-      }
+    composeTestRule.onNodeWithTag("dashboard_page_drills").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("drills_status_pill").assertTextEquals("E-09 ACTIVE")
+    composeTestRule.onNodeWithTag("vitals_bpm_text").assertTextEquals("--")
+    composeTestRule.onNodeWithTag("vitals_bp_text").assertTextEquals("--/--")
+    for (num in 1..10) {
+      composeTestRule.onNodeWithTag("drill_item_$num").assertIsDisplayed()
     }
-
-    composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("dashboard_page_cognitive").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("cognitive_status_pill").assertTextEquals("OK")
-    composeTestRule.onNodeWithTag("cognitive_score_text").assertTextEquals("94")
-    composeTestRule.onNodeWithTag("cognitive_calibration_text").assertTextEquals("CALIBRATED")
-    composeTestRule.onNodeWithTag("cognitive_hr_text").assertTextEquals("84 BPM")
   }
 }

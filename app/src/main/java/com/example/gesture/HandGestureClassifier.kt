@@ -16,6 +16,7 @@ enum class DashboardPage {
   MAP,
   SUIT_STATUS,
   COGNITIVE,
+  DRILLS,
 }
 
 enum class SwipeDirection {

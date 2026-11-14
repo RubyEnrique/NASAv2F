@@ -47,6 +47,7 @@ import com.example.ui.theme.IosLabelSecondary
 import com.example.ui.theme.IosSfAmber
 import com.example.ui.theme.IosSfIndigo
 import com.example.ui.theme.IosSfPink
+import com.example.ui.theme.IosSfRed
 import com.example.ui.theme.SpecularWhite
 import java.util.Locale
 import kotlin.math.exp
@@ -62,10 +63,15 @@ fun VitalsTelemetryWidget(
   spo2Percent: Int = 98,
   coreTempCelsius: Float = 37.1f,
   hydrationPercent: Int = 74,
+  isBiometricSensorLost: Boolean = false,
 ) {
   var microOffset by remember { mutableIntStateOf(0) }
 
-  LaunchedEffect(Unit) {
+  LaunchedEffect(isBiometricSensorLost) {
+    if (isBiometricSensorLost) {
+      microOffset = 0
+      return@LaunchedEffect
+    }
     val driftCycle = intArrayOf(0, 1, 0, -1, 0, 2, 1, 0)
     var index = 0
     while (true) {
@@ -75,8 +81,10 @@ fun VitalsTelemetryWidget(
     }
   }
 
-  val displayBpm = (heartRateBpm + microOffset).coerceIn(80, 175)
-  val bpText = "$systolicBp/$diastolicBp"
+  val displayBpm = (heartRateBpm + microOffset).coerceIn(50, 195)
+  val bpmText = if (isBiometricSensorLost) "--" else "$displayBpm"
+  val bpText = if (isBiometricSensorLost) "--/--" else "$systolicBp/$diastolicBp"
+  val spo2Text = if (isBiometricSensorLost) "--" else "$spo2Percent%"
   val coreText = String.format(Locale.US, "%.1f\u00B0", coreTempCelsius)
 
   val infiniteTransition = rememberInfiniteTransition(label = "ecg_sweep")
@@ -128,10 +136,10 @@ fun VitalsTelemetryWidget(
         verticalAlignment = Alignment.CenterVertically,
       ) {
         Text(
-          text = "$displayBpm",
+          text = bpmText,
           style =
             TextStyle(
-              color = IosLabelPrimary,
+              color = if (isBiometricSensorLost) IosLabelSecondary else IosLabelPrimary,
               fontFamily = FontFamily.SansSerif,
               fontWeight = FontWeight.SemiBold,
               fontSize = 20.sp,
@@ -144,7 +152,7 @@ fun VitalsTelemetryWidget(
           text = "BPM",
           style =
             TextStyle(
-              color = IosSfPink,
+              color = if (isBiometricSensorLost) IosLabelSecondary else IosSfPink,
               fontFamily = FontFamily.SansSerif,
               fontWeight = FontWeight.SemiBold,
               fontSize = 8.sp,
@@ -155,6 +163,7 @@ fun VitalsTelemetryWidget(
         Spacer(modifier = Modifier.width(6.dp))
         EcgWaveform(
           phase = phase,
+          isFlatline = isBiometricSensorLost,
           modifier = Modifier.weight(1f).height(18.dp),
         )
         Spacer(modifier = Modifier.width(6.dp))
@@ -174,7 +183,12 @@ fun VitalsTelemetryWidget(
             text = bpText,
             style =
               TextStyle(
-                color = if (systolicBp >= 135) IosSfAmber else IosLabelPrimary,
+                color =
+                  when {
+                    isBiometricSensorLost -> IosLabelSecondary
+                    systolicBp >= 135 -> IosSfAmber
+                    else -> IosLabelPrimary
+                  },
                 fontFamily = FontFamily.SansSerif,
                 fontWeight = FontWeight.SemiBold,
                 fontSize = 10.sp,
@@ -198,12 +212,25 @@ fun VitalsTelemetryWidget(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
       ) {
-        TelemetryCell(label = "SpO\u2082", value = "$spo2Percent%", valueColor = IosLabelPrimary)
-        TelemetryCell(label = "CORE", value = coreText, valueColor = IosLabelPrimary)
+        TelemetryCell(
+          label = "SpO\u2082",
+          value = spo2Text,
+          valueColor =
+            when {
+              isBiometricSensorLost -> IosLabelSecondary
+              spo2Percent < 93 -> IosSfRed
+              else -> IosLabelPrimary
+            },
+        )
+        TelemetryCell(
+          label = "CORE",
+          value = coreText,
+          valueColor = if (coreTempCelsius >= 38.0f) IosSfAmber else IosLabelPrimary,
+        )
         TelemetryCell(
           label = "H\u2082O",
           value = "$hydrationPercent%",
-          valueColor = IosSfIndigo,
+          valueColor = if (hydrationPercent < 35) IosSfRed else IosSfIndigo,
           valueTag = "vitals_h2o_text",
         )
       }
@@ -249,6 +276,7 @@ private fun TelemetryCell(
 @Composable
 private fun EcgWaveform(
   phase: Float,
+  isFlatline: Boolean = false,
   modifier: Modifier = Modifier,
 ) {
   Canvas(modifier = modifier) {
@@ -258,6 +286,17 @@ private fun EcgWaveform(
     val amp = h * 0.42f
     val steps = 64
     val path = Path()
+
+    if (isFlatline) {
+      path.moveTo(0f, midY)
+      path.lineTo(w, midY)
+      drawPath(
+        path = path,
+        color = IosLabelSecondary.copy(alpha = 0.55f),
+        style = Stroke(width = 1.35.dp.toPx(), cap = StrokeCap.Round),
+      )
+      return@Canvas
+    }
 
     for (i in 0..steps) {
       val u = i.toFloat() / steps.toFloat()

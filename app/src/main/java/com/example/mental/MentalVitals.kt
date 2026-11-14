@@ -248,6 +248,272 @@ class Readiness(
   }
 }
 
+enum class StressLevel {
+  LOW,
+  MODERATE,
+  HIGH,
+  CRITICAL,
+  UNKNOWN,
+}
+
+data class SleepTrackerState(
+  val durationHours: Float = 7.4f,
+  val qualityPercent: Int = 88,
+  val deepMinutes: Int = 112,
+  val remMinutes: Int = 104,
+  val sleepStatus: String = "RESTED",
+)
+
+enum class EmergencyDrill(
+  val number: Int,
+  val code: String,
+  val title: String,
+  val impactSummary: String,
+  val isCritical: Boolean,
+  val hrOffsetBpm: Int,
+  val coreTempOffsetC: Float,
+  val hydrationPercentOverride: Int?,
+  val suitPressureOverridePsi: Float?,
+  val oxygenPercentOverride: Int?,
+  val oxygenHoursOverride: Float?,
+  val suitPowerPercentOverride: Int?,
+  val suitPowerHoursOverride: Float?,
+  val ppCo2OverrideMmHg: Float?,
+  val radiationOverrideMSv: Float?,
+  val windSpeedOverrideMps: Float?,
+  val stressBoost: Int,
+  val stressDriverLabel: String,
+  val sensorDropout: Boolean = false,
+) {
+  NONE(
+    number = 0,
+    code = "NOMINAL",
+    title = "Nominal EVA",
+    impactSummary = "Baseline telemetry",
+    isCritical = false,
+    hrOffsetBpm = 0,
+    coreTempOffsetC = 0f,
+    hydrationPercentOverride = null,
+    suitPressureOverridePsi = null,
+    oxygenPercentOverride = null,
+    oxygenHoursOverride = null,
+    suitPowerPercentOverride = null,
+    suitPowerHoursOverride = null,
+    ppCo2OverrideMmHg = null,
+    radiationOverrideMSv = null,
+    windSpeedOverrideMps = null,
+    stressBoost = 0,
+    stressDriverLabel = "NOMINAL",
+  ),
+  EMERGENCY_1(
+    number = 1,
+    code = "E-01",
+    title = "Pressure Leak",
+    impactSummary = "2.9 psi · +38 BPM",
+    isCritical = true,
+    hrOffsetBpm = 38,
+    coreTempOffsetC = 0.2f,
+    hydrationPercentOverride = null,
+    suitPressureOverridePsi = 2.9f,
+    oxygenPercentOverride = 72,
+    oxygenHoursOverride = 2.6f,
+    suitPowerPercentOverride = null,
+    suitPowerHoursOverride = null,
+    ppCo2OverrideMmHg = null,
+    radiationOverrideMSv = null,
+    windSpeedOverrideMps = null,
+    stressBoost = 24,
+    stressDriverLabel = "PRESSURE",
+  ),
+  EMERGENCY_2(
+    number = 2,
+    code = "E-02",
+    title = "O2 Depletion",
+    impactSummary = "14% O2 · +28 BPM",
+    isCritical = true,
+    hrOffsetBpm = 28,
+    coreTempOffsetC = 0.1f,
+    hydrationPercentOverride = null,
+    suitPressureOverridePsi = null,
+    oxygenPercentOverride = 14,
+    oxygenHoursOverride = 0.4f,
+    suitPowerPercentOverride = null,
+    suitPowerHoursOverride = null,
+    ppCo2OverrideMmHg = null,
+    radiationOverrideMSv = null,
+    windSpeedOverrideMps = null,
+    stressBoost = 22,
+    stressDriverLabel = "HYPOXIA",
+  ),
+  EMERGENCY_3(
+    number = 3,
+    code = "E-03",
+    title = "Solar Rad Storm",
+    impactSummary = "1.85 mSv · +16 BPM",
+    isCritical = true,
+    hrOffsetBpm = 16,
+    coreTempOffsetC = 0.3f,
+    hydrationPercentOverride = null,
+    suitPressureOverridePsi = null,
+    oxygenPercentOverride = null,
+    oxygenHoursOverride = null,
+    suitPowerPercentOverride = null,
+    suitPowerHoursOverride = null,
+    ppCo2OverrideMmHg = null,
+    radiationOverrideMSv = 1.85f,
+    windSpeedOverrideMps = 13.8f,
+    stressBoost = 16,
+    stressDriverLabel = "RAD LOAD",
+  ),
+  EMERGENCY_4(
+    number = 4,
+    code = "E-04",
+    title = "CO2 Scrubber",
+    impactSummary = "8.4 mmHg · +22 BPM",
+    isCritical = true,
+    hrOffsetBpm = 22,
+    coreTempOffsetC = 0.2f,
+    hydrationPercentOverride = null,
+    suitPressureOverridePsi = null,
+    oxygenPercentOverride = null,
+    oxygenHoursOverride = null,
+    suitPowerPercentOverride = null,
+    suitPowerHoursOverride = null,
+    ppCo2OverrideMmHg = 8.4f,
+    radiationOverrideMSv = null,
+    windSpeedOverrideMps = null,
+    stressBoost = 18,
+    stressDriverLabel = "CO2 LOAD",
+  ),
+  EMERGENCY_5(
+    number = 5,
+    code = "E-05",
+    title = "Low Suit Power",
+    impactSummary = "14% PWR · +14 BPM",
+    isCritical = true,
+    hrOffsetBpm = 14,
+    coreTempOffsetC = -0.3f,
+    hydrationPercentOverride = null,
+    suitPressureOverridePsi = null,
+    oxygenPercentOverride = null,
+    oxygenHoursOverride = null,
+    suitPowerPercentOverride = 14,
+    suitPowerHoursOverride = 0.4f,
+    ppCo2OverrideMmHg = 3.2f,
+    radiationOverrideMSv = null,
+    windSpeedOverrideMps = null,
+    stressBoost = 14,
+    stressDriverLabel = "POWER FAULT",
+  ),
+  EMERGENCY_6(
+    number = 6,
+    code = "E-06",
+    title = "Acute Stress",
+    impactSummary = "+46 BPM · 5.8h sleep",
+    isCritical = true,
+    hrOffsetBpm = 46,
+    coreTempOffsetC = 0.4f,
+    hydrationPercentOverride = 64,
+    suitPressureOverridePsi = null,
+    oxygenPercentOverride = null,
+    oxygenHoursOverride = null,
+    suitPowerPercentOverride = null,
+    suitPowerHoursOverride = null,
+    ppCo2OverrideMmHg = 2.6f,
+    radiationOverrideMSv = null,
+    windSpeedOverrideMps = null,
+    stressBoost = 32,
+    stressDriverLabel = "ACUTE STRESS",
+  ),
+  EMERGENCY_7(
+    number = 7,
+    code = "E-07",
+    title = "Dust Gale Load",
+    impactSummary = "24.8 m/s · 38.6 C",
+    isCritical = false,
+    hrOffsetBpm = 26,
+    coreTempOffsetC = 1.5f,
+    hydrationPercentOverride = 34,
+    suitPressureOverridePsi = 4.1f,
+    oxygenPercentOverride = null,
+    oxygenHoursOverride = null,
+    suitPowerPercentOverride = 76,
+    suitPowerHoursOverride = 3.6f,
+    ppCo2OverrideMmHg = 3.4f,
+    radiationOverrideMSv = null,
+    windSpeedOverrideMps = 24.8f,
+    stressBoost = 16,
+    stressDriverLabel = "THERMAL",
+  ),
+  EMERGENCY_8(
+    number = 8,
+    code = "E-08",
+    title = "Dehydration",
+    impactSummary = "22% H2O · 38.1 C",
+    isCritical = false,
+    hrOffsetBpm = 18,
+    coreTempOffsetC = 1.0f,
+    hydrationPercentOverride = 22,
+    suitPressureOverridePsi = null,
+    oxygenPercentOverride = null,
+    oxygenHoursOverride = null,
+    suitPowerPercentOverride = null,
+    suitPowerHoursOverride = null,
+    ppCo2OverrideMmHg = null,
+    radiationOverrideMSv = null,
+    windSpeedOverrideMps = null,
+    stressBoost = 14,
+    stressDriverLabel = "DEHYDRATED",
+  ),
+  EMERGENCY_9(
+    number = 9,
+    code = "E-09",
+    title = "Sensor Dropout",
+    impactSummary = "HR/SpO2/BP --",
+    isCritical = true,
+    hrOffsetBpm = 0,
+    coreTempOffsetC = 0f,
+    hydrationPercentOverride = null,
+    suitPressureOverridePsi = null,
+    oxygenPercentOverride = null,
+    oxygenHoursOverride = null,
+    suitPowerPercentOverride = null,
+    suitPowerHoursOverride = null,
+    ppCo2OverrideMmHg = null,
+    radiationOverrideMSv = null,
+    windSpeedOverrideMps = null,
+    stressBoost = 0,
+    stressDriverLabel = "SENSOR LOSS",
+    sensorDropout = true,
+  ),
+  EMERGENCY_10(
+    number = 10,
+    code = "E-10",
+    title = "Compound Decomp",
+    impactSummary = "Multi-fault · +52 BPM",
+    isCritical = true,
+    hrOffsetBpm = 52,
+    coreTempOffsetC = 1.1f,
+    hydrationPercentOverride = 38,
+    suitPressureOverridePsi = 3.1f,
+    oxygenPercentOverride = 19,
+    oxygenHoursOverride = 0.6f,
+    suitPowerPercentOverride = 18,
+    suitPowerHoursOverride = 0.5f,
+    ppCo2OverrideMmHg = 7.6f,
+    radiationOverrideMSv = 1.20f,
+    windSpeedOverrideMps = 19.4f,
+    stressBoost = 38,
+    stressDriverLabel = "MULTI-FAULT",
+  );
+
+  companion object {
+    val activeDrills: List<EmergencyDrill> = entries.filter { it != NONE }
+
+    fun fromNumber(number: Int): EmergencyDrill? = entries.firstOrNull { it.number == number }
+  }
+}
+
 data class MentalState(
   val heartRate: Double?,
   val o2Use: Double,
@@ -264,30 +530,110 @@ data class MentalState(
   val hrPenalty: Int,
   val co2Penalty: Int,
   val scenario: MentalScenario,
+  val stressPercent: Int = 10,
+  val stressLevel: StressLevel = StressLevel.LOW,
+  val stressDriver: String = "NOMINAL",
+  val sleepTracker: SleepTrackerState = SleepTrackerState(),
 )
 
-class MentalVitals(seed: Long = 1L, private val askAfterMs: Long = 30_000) {
+class MentalVitals(
+  seed: Long = 1L,
+  private val askAfterMs: Long = 30_000,
+  preSeedBaseline: Boolean = true,
+) {
   private val sim = MentalSim(seed)
   private val readiness = Readiness()
   @Volatile var scenario: MentalScenario = MentalScenario.BASELINE
 
+  init {
+    if (preSeedBaseline) {
+      seedCalmBaseline()
+    }
+  }
+
+  private fun seedCalmBaseline() {
+    var tMs = -200_000L
+    for (i in 0 until 190) {
+      val phase = 0.5 + 0.5 * sin(2 * PI * i / 60.0)
+      val o2 = 0.09 + 0.05 * phase
+      val calmHr = 84.0 + 350.0 * (o2 - 0.09)
+      readiness.update(tMs, calmHr, o2, 1.8)
+      tMs += 1_000L
+    }
+  }
+
   fun recalibrate() = readiness.recalibrate()
 
-  fun tick(nowMs: Long): MentalState {
-    val sc = scenario
-    val s = sim.step(nowMs, sc)
-    val r = readiness.update(nowMs, s.heartRate, s.o2Use, s.helmetCo2MmHg)
+  fun evaluate(
+    nowMs: Long,
+    syncedHeartRateBpm: Double?,
+    workload: Double,
+    helmetCo2MmHg: Double,
+    activeDrill: EmergencyDrill = EmergencyDrill.NONE,
+    evaSeconds: Int = 0,
+  ): MentalState {
+    val r = readiness.update(nowMs, syncedHeartRateBpm, workload, helmetCo2MmHg)
+    val sleepTracker = computeSleepTracker(activeDrill, evaSeconds)
+
+    if (syncedHeartRateBpm == null || activeDrill.sensorDropout) {
+      return MentalState(
+        heartRate = null,
+        o2Use = workload,
+        helmetCo2MmHg = helmetCo2MmHg,
+        score = null,
+        band = MentalBand.UNKNOWN,
+        label = null,
+        askOk = false,
+        calibrated = r.calibrated,
+        calibration = r.calibration,
+        needsWorkloadChange = r.needsWorkloadChange,
+        expectedHr = r.expectedHr,
+        additionalHr = null,
+        hrPenalty = 0,
+        co2Penalty = 0,
+        scenario = scenario,
+        stressPercent = 0,
+        stressLevel = StressLevel.UNKNOWN,
+        stressDriver = "SENSOR LOSS",
+        sleepTracker = sleepTracker,
+      )
+    }
+
+    val excessHr = max(0.0, syncedHeartRateBpm - 86.0) * 1.10
+    val co2Load = max(0.0, helmetCo2MmHg - 2.0) * 6.5
+    val readinessPenalty = (r.hrPenalty + r.co2Penalty) * 0.60
+    val fatigueLoad = ((100 - sleepTracker.qualityPercent) * 0.25)
+    val rawStress = 8.0 + max(readinessPenalty, excessHr * 0.72) + co2Load + activeDrill.stressBoost + fatigueLoad
+    val stressPercent = Math.round(rawStress).toInt().coerceIn(5, 99)
+
+    val stressLevel =
+      when {
+        stressPercent >= 80 -> StressLevel.CRITICAL
+        stressPercent >= 58 -> StressLevel.HIGH
+        stressPercent >= 32 -> StressLevel.MODERATE
+        else -> StressLevel.LOW
+      }
+
+    val stressDriver =
+      when {
+        activeDrill != EmergencyDrill.NONE -> activeDrill.stressDriverLabel
+        helmetCo2MmHg >= 3.5 -> "CO2 LOAD"
+        syncedHeartRateBpm >= 115.0 -> "EXERTION"
+        else -> "NOMINAL"
+      }
+
     val band =
       when {
         r.score == null -> MentalBand.UNKNOWN
-        r.score < 50 -> MentalBand.WARNING
-        r.score < 70 -> MentalBand.CAUTION
+        r.score < 50 || stressLevel == StressLevel.CRITICAL -> MentalBand.WARNING
+        r.score < 70 || stressLevel == StressLevel.HIGH -> MentalBand.CAUTION
         else -> MentalBand.OK
       }
+
     return MentalState(
-      heartRate = s.heartRate,
-      o2Use = s.o2Use,
-      helmetCo2MmHg = s.helmetCo2MmHg,
+      heartRate = syncedHeartRateBpm,
+      o2Use = workload,
+      helmetCo2MmHg = helmetCo2MmHg,
       score = r.score,
       band = band,
       label = if (band == MentalBand.CAUTION || band == MentalBand.WARNING) "[Readiness Low]" else null,
@@ -299,7 +645,66 @@ class MentalVitals(seed: Long = 1L, private val askAfterMs: Long = 30_000) {
       additionalHr = r.residual,
       hrPenalty = r.hrPenalty,
       co2Penalty = r.co2Penalty,
-      scenario = sc,
+      scenario = scenario,
+      stressPercent = stressPercent,
+      stressLevel = stressLevel,
+      stressDriver = stressDriver,
+      sleepTracker = sleepTracker,
     )
   }
+
+  fun tick(nowMs: Long): MentalState {
+    val sc = scenario
+    val s = sim.step(nowMs, sc)
+    return evaluate(
+      nowMs = nowMs,
+      syncedHeartRateBpm = s.heartRate,
+      workload = s.o2Use,
+      helmetCo2MmHg = s.helmetCo2MmHg,
+    )
+  }
+
+  private fun computeSleepTracker(activeDrill: EmergencyDrill, evaSeconds: Int): SleepTrackerState {
+    val evaHours = evaSeconds / 3600f
+    val baseDuration = (7.4f - evaHours * 0.15f).coerceIn(5.5f, 8.0f)
+    val baseQuality = (88 - (evaHours * 2f).toInt()).coerceIn(65, 95)
+
+    return when (activeDrill) {
+      EmergencyDrill.EMERGENCY_6 ->
+        SleepTrackerState(
+          durationHours = 5.8f,
+          qualityPercent = 62,
+          deepMinutes = 74,
+          remMinutes = 68,
+          sleepStatus = "FATIGUED",
+        )
+      EmergencyDrill.EMERGENCY_10 ->
+        SleepTrackerState(
+          durationHours = 4.6f,
+          qualityPercent = 48,
+          deepMinutes = 52,
+          remMinutes = 50,
+          sleepStatus = "DEPRIVED",
+        )
+      EmergencyDrill.EMERGENCY_4,
+      EmergencyDrill.EMERGENCY_7,
+      EmergencyDrill.EMERGENCY_8 ->
+        SleepTrackerState(
+          durationHours = 6.3f,
+          qualityPercent = 71,
+          deepMinutes = 86,
+          remMinutes = 82,
+          sleepStatus = "FATIGUED",
+        )
+      else ->
+        SleepTrackerState(
+          durationHours = baseDuration,
+          qualityPercent = baseQuality,
+          deepMinutes = 112,
+          remMinutes = 104,
+          sleepStatus = if (baseQuality >= 78) "RESTED" else "FATIGUED",
+        )
+    }
+  }
 }
+

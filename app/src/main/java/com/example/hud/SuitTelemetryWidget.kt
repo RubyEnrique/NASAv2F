@@ -192,7 +192,7 @@ fun SuitTelemetryWidget(
       ) {
         ResourceRingCluster(
           percent = oxygenPercent,
-          ringColor = IosSfBlue,
+          ringColor = if (oxygenPercent < 25) IosSfRed else IosSfBlue,
           label = "O\u2082",
           subValue = o2HoursText,
         )
@@ -227,14 +227,27 @@ fun SuitTelemetryWidget(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
       ) {
-        SuitCell(label = "ppCO\u2082", value = ppCo2Text, valueColor = IosSfGreen)
+        SuitCell(
+          label = "ppCO\u2082",
+          value = ppCo2Text,
+          valueColor =
+            when {
+              ppCo2MmHg >= 6.0f -> IosSfRed
+              ppCo2MmHg >= 3.0f -> IosSfAmber
+              else -> IosSfGreen
+            },
+        )
         SuitCell(
           label = "RAD",
           value = radFormatted,
-          valueColor = IosSfAmber,
+          valueColor = if (activeRadMSv >= 1.0f) IosSfRed else IosSfAmber,
           valueTag = "suit_rad_text",
         )
-        SuitCell(label = "WIND", value = windFormatted, valueColor = IosLabelPrimary)
+        SuitCell(
+          label = "WIND",
+          value = windFormatted,
+          valueColor = if (activeWindMps >= 15.0f) IosSfAmber else IosLabelPrimary,
+        )
         SuitCell(
           label = "EVA",
           value = evaFormatted,
