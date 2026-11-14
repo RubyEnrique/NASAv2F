@@ -1,0 +1,6 @@
+{
+  "name": "app",
+  "description": "Distraction-free rear camera HUD controlled via MediaPipe hand gestures with a zero-text visionOS glass dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
