@@ -52,9 +52,10 @@ import com.example.ui.theme.IosLabelSecondary
 import com.example.ui.theme.IosSfAmber
 import com.example.ui.theme.IosSfBlue
 import com.example.ui.theme.IosSfGreen
-import com.example.ui.theme.IosSfIndigo
 import com.example.ui.theme.IosSfRed
 import com.example.ui.theme.SpecularWhite
+import java.util.Locale
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 
 @Composable
@@ -62,13 +63,24 @@ fun SuitTelemetryWidget(
   modifier: Modifier = Modifier,
   lowPowerDelayMs: Long = 60_000L,
   initialBatteryLow: Boolean = false,
+  suitPressurePsi: Float = 4.3f,
+  oxygenPercent: Int = 88,
+  oxygenHours: Float = 3.8f,
+  suitPowerPercent: Int? = null,
+  suitPowerHours: Float = 4.5f,
+  ppCo2MmHg: Float = 1.8f,
+  radiationMSv: Float? = null,
+  windSpeedMps: Float? = null,
+  evaSeconds: Int? = null,
 ) {
-  var evaSeconds by remember { mutableIntStateOf(3 * 60 + 42) }
-  var windSpeedTenths by remember { mutableIntStateOf(64) }
-  var radHundredths by remember { mutableIntStateOf(24) }
-  var powerPercent by remember { mutableIntStateOf(if (initialBatteryLow) 18 else 92) }
+  var localEvaSeconds by remember { mutableIntStateOf(3 * 60 + 42) }
+  var localWindSpeedTenths by remember { mutableIntStateOf(64) }
+  var localRadHundredths by remember { mutableIntStateOf(24) }
+  var localPowerPercent by remember { mutableIntStateOf(if (initialBatteryLow) 18 else 92) }
 
-  LaunchedEffect(lowPowerDelayMs, initialBatteryLow) {
+  val useInternalTicker = suitPowerPercent == null && evaSeconds == null
+  LaunchedEffect(lowPowerDelayMs, initialBatteryLow, useInternalTicker) {
+    if (!useInternalTicker) return@LaunchedEffect
     val windCycle = intArrayOf(64, 65, 64, 63, 64, 66, 65, 64)
     val radCycle = intArrayOf(24, 24, 25, 24, 23, 24, 25, 24)
     var elapsedMs = 0L
@@ -76,20 +88,25 @@ fun SuitTelemetryWidget(
     while (true) {
       delay(1000L)
       elapsedMs += 1000L
-      evaSeconds++
+      localEvaSeconds++
       tick++
       if (tick % 3 == 0) {
         val idx = (tick / 3) % windCycle.size
-        windSpeedTenths = windCycle[idx]
-        radHundredths = radCycle[idx]
+        localWindSpeedTenths = windCycle[idx]
+        localRadHundredths = radCycle[idx]
       }
-      if (elapsedMs >= lowPowerDelayMs && powerPercent >= 20) {
-        powerPercent = 18
+      if (elapsedMs >= lowPowerDelayMs && localPowerPercent >= 20) {
+        localPowerPercent = 18
       }
     }
   }
 
-  val isLowPower = powerPercent < 20
+  val activePowerPercent = suitPowerPercent ?: localPowerPercent
+  val activeEvaSeconds = evaSeconds ?: localEvaSeconds
+  val activeWindMps = windSpeedMps ?: (localWindSpeedTenths / 10f)
+  val activeRadMSv = radiationMSv ?: (localRadHundredths / 100f)
+
+  val isLowPower = activePowerPercent < 20
   val infiniteTransition = rememberInfiniteTransition(label = "low_power_pulse")
   val pulseRaw by
     infiniteTransition.animateFloat(
@@ -137,18 +154,23 @@ fun SuitTelemetryWidget(
       )
     }
 
-  val evaMinutes = evaSeconds / 60
-  val evaRemSeconds = evaSeconds % 60
+  val evaMinutes = activeEvaSeconds / 60
+  val evaRemSeconds = activeEvaSeconds % 60
   val evaFormatted =
     "${evaMinutes.toString().padStart(2, '0')}:${evaRemSeconds.toString().padStart(2, '0')}"
-  val windFormatted = "${windSpeedTenths / 10}.${windSpeedTenths % 10}m/s"
-  val radFormatted = "0.${radHundredths.toString().padStart(2, '0')}mSv"
-  val powerHoursText = if (isLowPower) "0.8h" else "4.5h"
+  val windFormatted = String.format(Locale.US, "%.1fm/s", activeWindMps)
+  val radFormatted = String.format(Locale.US, "%.2fmSv", activeRadMSv)
+  val o2HoursText = String.format(Locale.US, "%.1fh", oxygenHours)
+  val powerHoursText = if (isLowPower) "0.8h" else String.format(Locale.US, "%.1fh", suitPowerHours)
+  val pressureValueText = String.format(Locale.US, "%.1fpsi", suitPressurePsi)
+  val pressureRingPercent = ((suitPressurePsi / 5.0f) * 100f).roundToInt().coerceIn(0, 100)
+  val pressureOk = suitPressurePsi in 3.8f..4.6f
+  val ppCo2Text = String.format(Locale.US, "%.1fmm", ppCo2MmHg)
 
   Box(
     modifier =
       modifier
-        .width(228.dp)
+        .width(232.dp)
         .testTag("suit_hud_widget")
         .clip(cardShape)
         .background(frostedGlassBrush)
@@ -169,19 +191,21 @@ fun SuitTelemetryWidget(
         verticalAlignment = Alignment.CenterVertically,
       ) {
         ResourceRingCluster(
-          percent = 88,
+          percent = oxygenPercent,
           ringColor = IosSfBlue,
           label = "O\u2082",
-          subValue = "3.8h",
+          subValue = o2HoursText,
         )
         ResourceRingCluster(
-          percent = 74,
-          ringColor = IosSfIndigo,
-          label = "H\u2082O",
-          subValue = "1.4L",
+          percent = pressureRingPercent,
+          centerTextOverride = String.format(Locale.US, "%.1f", suitPressurePsi),
+          ringColor = if (pressureOk) IosSfGreen else IosSfRed,
+          label = "SUIT",
+          subValue = pressureValueText,
+          subValueTestTag = "suit_pressure_text",
         )
         ResourceRingCluster(
-          percent = powerPercent,
+          percent = activePowerPercent,
           ringColor = powerRingColor,
           label = "PWR",
           subValue = powerHoursText,
@@ -203,8 +227,13 @@ fun SuitTelemetryWidget(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
       ) {
-        SuitCell(label = "ppCO\u2082", value = "1.8mm", valueColor = IosSfGreen)
-        SuitCell(label = "RAD", value = radFormatted, valueColor = IosSfAmber)
+        SuitCell(label = "ppCO\u2082", value = ppCo2Text, valueColor = IosSfGreen)
+        SuitCell(
+          label = "RAD",
+          value = radFormatted,
+          valueColor = IosSfAmber,
+          valueTag = "suit_rad_text",
+        )
         SuitCell(label = "WIND", value = windFormatted, valueColor = IosLabelPrimary)
         SuitCell(
           label = "EVA",
@@ -224,9 +253,11 @@ private fun ResourceRingCluster(
   label: String,
   subValue: String,
   pulseFraction: Float = 0f,
+  centerTextOverride: String? = null,
   percentTestTag: String? = null,
+  subValueTestTag: String? = null,
 ) {
-  val isPulsing = percent < 20
+  val isPulsing = percent < 20 && centerTextOverride == null
   val ringScale = if (isPulsing) 0.96f + 0.08f * pulseFraction else 1f
   val contentAlpha = if (isPulsing) 0.74f + 0.26f * pulseFraction else 1f
 
@@ -276,7 +307,7 @@ private fun ResourceRingCluster(
         )
       }
       Text(
-        text = "$percent%",
+        text = centerTextOverride ?: "$percent%",
         style =
           TextStyle(
             color = IosLabelPrimary,
@@ -312,6 +343,7 @@ private fun ResourceRingCluster(
             fontSize = 9.5.sp,
             fontFeatureSettings = "tnum",
           ),
+        modifier = if (subValueTestTag != null) Modifier.testTag(subValueTestTag) else Modifier,
       )
     }
   }

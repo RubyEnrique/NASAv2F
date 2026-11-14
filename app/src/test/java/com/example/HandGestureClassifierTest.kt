@@ -75,24 +75,30 @@ class HandGestureClassifierTest {
   }
 
   @Test
-  fun onePalmHeldFor800Ms_opensQuickHold_andDropsAfter150Ms() {
+  fun onePalmHeldFor800Ms_opensQuickHold_andDropsWhenPalmLowered() {
     val classifier = HandGestureClassifier()
-    val palm = createOpenPalmUp()
+    val palmCenter = createOpenPalmUp()
 
-    val u0 = classifier.processFrames(listOf(palm), 1000L, DashboardMode.CLOSED)
+    val u0 = classifier.processFrames(listOf(palmCenter), 1000L, DashboardMode.CLOSED)
     assertEquals(0f, u0.palmHoldProgress, 0.01f)
     assertNull(u0.openMode)
 
-    val uDone = classifier.processFrames(listOf(palm), 1800L, DashboardMode.CLOSED)
+    val uMid = classifier.processFrames(listOf(palmCenter), 1400L, DashboardMode.CLOSED)
+    assertEquals(0.5f, uMid.palmHoldProgress, 0.02f)
+    assertNull(uMid.openMode)
+
+    val uDone = classifier.processFrames(listOf(palmCenter), 1800L, DashboardMode.CLOSED)
     assertEquals(DashboardMode.QUICK_HOLD, uDone.openMode)
 
-    val held = classifier.processFrames(listOf(palm), 2100L, DashboardMode.QUICK_HOLD)
+    // Stays open while hand remains raised
+    val held = classifier.processFrames(listOf(palmCenter), 2300L, DashboardMode.QUICK_HOLD)
     assertFalse(held.shouldCloseDashboard)
 
-    val briefFlicker = classifier.processFrames(emptyList(), 2200L, DashboardMode.QUICK_HOLD)
+    // Brief frame flicker (<150ms) does not close; drops cleanly after 150ms lowered
+    val briefFlicker = classifier.processFrames(emptyList(), 2400L, DashboardMode.QUICK_HOLD)
     assertFalse(briefFlicker.shouldCloseDashboard)
 
-    val lowered = classifier.processFrames(emptyList(), 2300L, DashboardMode.QUICK_HOLD)
+    val lowered = classifier.processFrames(emptyList(), 2500L, DashboardMode.QUICK_HOLD)
     assertTrue(lowered.shouldCloseDashboard)
   }
 
@@ -286,5 +292,287 @@ class HandGestureClassifierTest {
     assertEquals(listOf(HudEvent.ExitApp), emitted)
 
     collectJob.cancel()
+  }
+
+  private fun createTiltedOpenHand(offsetX: Float = 0f, offsetY: Float = 0f): List<HandLandmarkPoint> {
+    // Hand tilted sideways ~45 deg where pinky/index fail strict upright tip.y < mcp.y check.
+    return listOf(
+      HandLandmarkPoint(0.50f + offsetX, 0.70f + offsetY), // 0 wrist
+      HandLandmarkPoint(0.46f + offsetX, 0.65f + offsetY), // 1 thumb CMC
+      HandLandmarkPoint(0.44f + offsetX, 0.59f + offsetY), // 2 thumb MCP
+      HandLandmarkPoint(0.43f + offsetX, 0.55f + offsetY), // 3 thumb IP
+      HandLandmarkPoint(0.42f + offsetX, 0.52f + offsetY), // 4 thumb TIP
+      HandLandmarkPoint(0.56f + offsetX, 0.58f + offsetY), // 5 index MCP
+      HandLandmarkPoint(0.62f + offsetX, 0.56f + offsetY), // 6 index PIP
+      HandLandmarkPoint(0.66f + offsetX, 0.55f + offsetY), // 7 index DIP
+      HandLandmarkPoint(0.70f + offsetX, 0.54f + offsetY), // 8 index TIP
+      HandLandmarkPoint(0.57f + offsetX, 0.62f + offsetY), // 9 middle MCP
+      HandLandmarkPoint(0.64f + offsetX, 0.61f + offsetY), // 10 middle PIP
+      HandLandmarkPoint(0.69f + offsetX, 0.61f + offsetY), // 11 middle DIP
+      HandLandmarkPoint(0.74f + offsetX, 0.62f + offsetY), // 12 middle TIP (y == mcp.y)
+      HandLandmarkPoint(0.56f + offsetX, 0.67f + offsetY), // 13 ring MCP
+      HandLandmarkPoint(0.62f + offsetX, 0.68f + offsetY), // 14 ring PIP
+      HandLandmarkPoint(0.66f + offsetX, 0.69f + offsetY), // 15 ring DIP
+      HandLandmarkPoint(0.70f + offsetX, 0.70f + offsetY), // 16 ring TIP (y > mcp.y)
+      HandLandmarkPoint(0.54f + offsetX, 0.71f + offsetY), // 17 pinky MCP
+      HandLandmarkPoint(0.59f + offsetX, 0.73f + offsetY), // 18 pinky PIP
+      HandLandmarkPoint(0.62f + offsetX, 0.75f + offsetY), // 19 pinky DIP
+      HandLandmarkPoint(0.65f + offsetX, 0.77f + offsetY), // 20 pinky TIP (y > mcp.y)
+    )
+  }
+
+  @Test
+  fun permanentDashboard_openHandSwipeNavigatesBetweenVitalsMapAndSuitStatus() {
+    val vm = HudViewModel(enablePeriodicDecay = false)
+    vm.onVoiceCommand(VoiceCommand.OPEN_PERMANENT)
+    assertEquals(DashboardMode.PERMANENT, vm.uiState.value.dashboardMode)
+    assertEquals(com.example.gesture.DashboardPage.MAP, vm.uiState.value.currentPage)
+
+    // Swipe hand left (decreasing X) -> move left to Vitals (even with a tilted hand and 2nd resting fist)
+    val restingSecondHand = createClosedFist(offsetX = -0.35f, offsetY = 0.15f)
+    var t = 1000L
+    vm.onHandsDetected(listOf(createTiltedOpenHand(offsetX = 0.12f), restingSecondHand), t)
+    t += 120L
+    vm.onHandsDetected(listOf(createTiltedOpenHand(offsetX = 0.04f), restingSecondHand), t)
+    t += 120L
+    vm.onHandsDetected(listOf(createTiltedOpenHand(offsetX = -0.04f), restingSecondHand), t)
+    assertEquals(com.example.gesture.DashboardPage.VITALS, vm.uiState.value.currentPage)
+    assertEquals(com.example.gesture.SwipeDirection.PREVIOUS, vm.uiState.value.lastSwipeDirection)
+    assertEquals(1L, vm.uiState.value.swipeCueId)
+
+    // Cooldown prevents accidental double trigger immediately
+    t += 150L
+    vm.onHandsDetected(listOf(createTiltedOpenHand(offsetX = 0.25f)), t)
+    assertEquals(com.example.gesture.DashboardPage.VITALS, vm.uiState.value.currentPage)
+
+    // After cooldown, swipe hand right (increasing X) -> Vitals -> Map -> Suit Status
+    t += 700L
+    vm.onHandsDetected(listOf(createTiltedOpenHand(offsetX = -0.10f)), t)
+    t += 120L
+    vm.onHandsDetected(listOf(createTiltedOpenHand(offsetX = 0.06f)), t)
+    assertEquals(com.example.gesture.DashboardPage.MAP, vm.uiState.value.currentPage)
+    assertEquals(com.example.gesture.SwipeDirection.NEXT, vm.uiState.value.lastSwipeDirection)
+
+    t += 700L
+    vm.onHandsDetected(listOf(createOpenPalmUp(offsetX = -0.08f)), t)
+    t += 120L
+    vm.onHandsDetected(listOf(createOpenPalmUp(offsetX = 0.08f)), t)
+    assertEquals(com.example.gesture.DashboardPage.SUIT_STATUS, vm.uiState.value.currentPage)
+
+    // Swiping right at Suit Status moves to Cognitive, then clamps cleanly at Cognitive
+    t += 700L
+    vm.onHandsDetected(listOf(createOpenPalmUp(offsetX = -0.08f)), t)
+    t += 120L
+    vm.onHandsDetected(listOf(createOpenPalmUp(offsetX = 0.08f)), t)
+    assertEquals(com.example.gesture.DashboardPage.COGNITIVE, vm.uiState.value.currentPage)
+
+    t += 700L
+    vm.onHandsDetected(listOf(createOpenPalmUp(offsetX = -0.08f)), t)
+    t += 120L
+    vm.onHandsDetected(listOf(createOpenPalmUp(offsetX = 0.08f)), t)
+    assertEquals(com.example.gesture.DashboardPage.COGNITIVE, vm.uiState.value.currentPage)
+  }
+
+  @Test
+  fun voicePageCommands_switchPagesImmediatelyWhenDashboardOpen() {
+    assertEquals(VoiceCommand.NAVIGATE_VITALS, VoiceCommandRecognizer.parseVoiceCommand("vitals"))
+    assertEquals(VoiceCommand.NAVIGATE_MAP, VoiceCommandRecognizer.parseVoiceCommand("map"))
+    assertEquals(VoiceCommand.NAVIGATE_MAP, VoiceCommandRecognizer.parseVoiceCommand("Meter"))
+    assertEquals(VoiceCommand.NAVIGATE_SUIT, VoiceCommandRecognizer.parseVoiceCommand("suit"))
+    assertEquals(VoiceCommand.NAVIGATE_SUIT, VoiceCommandRecognizer.parseVoiceCommand("suit status"))
+    assertEquals(VoiceCommand.NAVIGATE_COGNITIVE, VoiceCommandRecognizer.parseVoiceCommand("cognitive"))
+    assertEquals(VoiceCommand.NAVIGATE_COGNITIVE, VoiceCommandRecognizer.parseVoiceCommand("readiness"))
+
+    val vm = HudViewModel(enablePeriodicDecay = false)
+    // Ignored when dashboard is closed
+    vm.onVoiceCommand(VoiceCommand.NAVIGATE_VITALS)
+    assertEquals(com.example.gesture.DashboardPage.MAP, vm.uiState.value.currentPage)
+
+    // Works anytime dashboard is open (quick voice or permanent)
+    vm.onVoiceCommand(VoiceCommand.TOGGLE_QUICK)
+    assertEquals(DashboardMode.QUICK_VOICE, vm.uiState.value.dashboardMode)
+
+    vm.onVoiceCommand(VoiceCommand.NAVIGATE_VITALS)
+    assertEquals(com.example.gesture.DashboardPage.VITALS, vm.uiState.value.currentPage)
+
+    vm.onVoiceCommand(VoiceCommand.NAVIGATE_SUIT)
+    assertEquals(com.example.gesture.DashboardPage.SUIT_STATUS, vm.uiState.value.currentPage)
+
+    vm.onVoiceCommand(VoiceCommand.NAVIGATE_COGNITIVE)
+    assertEquals(com.example.gesture.DashboardPage.COGNITIVE, vm.uiState.value.currentPage)
+
+    vm.onVoiceCommand(VoiceCommand.NAVIGATE_MAP)
+    assertEquals(com.example.gesture.DashboardPage.MAP, vm.uiState.value.currentPage)
+  }
+
+  @Test
+  fun gpsIndoorFallback_acceptsModerateAccuracyMoveWhileFilteringJitter() {
+    val indoorJitter =
+      GpsDistanceMonitor.filterLocationDelta(
+        rawDistanceMeters = 12f,
+        elapsedSec = 2f,
+        accuracyMeters = 45f,
+        reportedSpeedMps = 0f,
+        allowIndoorFallback = true,
+      )
+    assertFalse(indoorJitter.acceptedAsAnchor)
+
+    val indoorRealMove =
+      GpsDistanceMonitor.filterLocationDelta(
+        rawDistanceMeters = 32f,
+        elapsedSec = 8f,
+        accuracyMeters = 45f,
+        reportedSpeedMps = 1.6f,
+        allowIndoorFallback = true,
+      )
+    assertTrue(indoorRealMove.acceptedAsAnchor)
+    assertEquals(32f, indoorRealMove.deltaMeters, 0.01f)
+  }
+
+  @Test
+  fun marsMolaTileCoords_andGpsVectorTrackUpdate() {
+    val jezeroTile = com.example.hud.MarsMolaTileCoords.latLonToTile(18.38, 77.58, zoom = 4)
+    assertEquals(4, jezeroTile.key.z)
+    assertEquals(6, jezeroTile.key.row)
+    assertEquals(22, jezeroTile.key.col)
+    assertEquals(
+      "mars_mola_tiles/5/12/45.jpg",
+      com.example.hud.MarsMolaTileCoords.assetPath(5, 12, 45),
+    )
+    assertEquals(4, com.example.hud.MarsMolaTileCoords.selectTileZoom(1.2f))
+    assertEquals(5, com.example.hud.MarsMolaTileCoords.selectTileZoom(2.1f))
+    assertEquals(6, com.example.hud.MarsMolaTileCoords.selectTileZoom(3.4f))
+
+    val vm = HudViewModel(enablePeriodicDecay = false)
+    assertEquals(1, vm.uiState.value.marsTrackPoints.size)
+    vm.onGpsVectorDelta(deltaEastMeters = 12.5f, deltaNorthMeters = -4.0f)
+    vm.onGpsVectorDelta(deltaEastMeters = 5.0f, deltaNorthMeters = 9.0f)
+
+    val track = vm.uiState.value.marsTrackPoints
+    assertEquals(3, track.size)
+    assertEquals(17.5f, track.last().eastMeters, 0.01f)
+    assertEquals(5.0f, track.last().northMeters, 0.01f)
+  }
+
+  private fun createPinchedHand(
+    offsetX: Float = 0f,
+    offsetY: Float = 0f,
+    scale: Float = 1f,
+    zDepth: Float = 0f,
+  ): List<HandLandmarkPoint> {
+    val base = createOpenPalmUp()
+    val cx = 0.50f
+    val cy = 0.60f
+    return base.mapIndexed { idx, pt ->
+      // Bring thumb tip (4) and index tip (8) together into a tight pinch
+      val (rawX, rawY) =
+        when (idx) {
+          3 -> 0.41f to 0.45f
+          4 -> 0.43f to 0.39f
+          7 -> 0.43f to 0.40f
+          8 -> 0.435f to 0.392f
+          else -> pt.x to pt.y
+        }
+      HandLandmarkPoint(
+        x = cx + (rawX - cx) * scale + offsetX,
+        y = cy + (rawY - cy) * scale + offsetY,
+        z = zDepth,
+      )
+    }
+  }
+
+  @Test
+  fun marsMapPinchForwardTiltZoomsAndLateralMotionPansCamera() {
+    val vm = HudViewModel(enablePeriodicDecay = false)
+    vm.onVoiceCommand(VoiceCommand.OPEN_PERMANENT)
+    assertEquals(com.example.gesture.DashboardPage.MAP, vm.uiState.value.currentPage)
+    assertEquals(1.0f, vm.uiState.value.mapZoom, 0.01f)
+    assertEquals(0f, vm.uiState.value.mapTiltDegrees, 0.01f)
+
+    // Pinch start anchor
+    val pinchStart = createPinchedHand(offsetX = 0f, offsetY = 0f, scale = 1.0f, zDepth = 0.0f)
+    vm.onHandsDetected(listOf(pinchStart), 1000L)
+    assertTrue(vm.uiState.value.isMapPinching)
+
+    // Move pinch forward (larger apparent scale + closer negative Z) and move laterally right
+    val pinchForwardRight = createPinchedHand(offsetX = 0.10f, offsetY = -0.05f, scale = 1.24f, zDepth = -0.06f)
+    vm.onHandsDetected(listOf(pinchForwardRight), 1120L)
+
+    assertTrue("Expected pinch forward to zoom in", vm.uiState.value.mapZoom > 1.5f)
+    assertTrue("Expected pinch forward to tilt into 3D relief", vm.uiState.value.mapTiltDegrees > 8f)
+    assertTrue("Expected lateral pinch movement to pan east", vm.uiState.value.mapPanEastDeg > 0.1f)
+    assertTrue("Expected upward lateral pinch movement to pan north", vm.uiState.value.mapPanNorthDeg > 0.05f)
+    // Lateral pan while pinching must NOT trigger page swipe away from MAP
+    assertEquals(com.example.gesture.DashboardPage.MAP, vm.uiState.value.currentPage)
+
+    val zoomed = vm.uiState.value.mapZoom
+    // Pull pinch back -> zooms out and flattens tilt (sustained over 2 frames with smoothing)
+    val pinchPullBack1 = createPinchedHand(offsetX = 0.10f, offsetY = -0.05f, scale = 0.88f, zDepth = 0.03f)
+    vm.onHandsDetected(listOf(pinchPullBack1), 1240L)
+    val pinchPullBack2 = createPinchedHand(offsetX = 0.10f, offsetY = -0.05f, scale = 0.80f, zDepth = 0.05f)
+    vm.onHandsDetected(listOf(pinchPullBack2), 1360L)
+    assertTrue("Expected pinch backward to zoom out", vm.uiState.value.mapZoom < zoomed)
+  }
+
+  @Test
+  fun molaFallbackCandidates_andVoiceZoomRecenterWorkCleanly() {
+    val edgeTile = com.example.hud.MarsTileKey(z = 6, row = 24, col = 89)
+    val candidates = com.example.hud.MarsMolaTileCoords.fallbackCandidates(edgeTile)
+    assertEquals(3, candidates.size)
+    assertEquals(com.example.hud.MarsTileKey(6, 24, 89), candidates[0].key)
+    assertEquals(com.example.hud.MarsTileKey(5, 12, 44), candidates[1].key)
+    assertEquals(2, candidates[1].scaleDivisor)
+    assertEquals(1, candidates[1].subTileX)
+    assertEquals(0, candidates[1].subTileY)
+    assertEquals(com.example.hud.MarsTileKey(4, 6, 22), candidates[2].key)
+    assertEquals(4, candidates[2].scaleDivisor)
+
+    assertEquals(VoiceCommand.MAP_ZOOM_IN, VoiceCommandRecognizer.parseVoiceCommand("zoom in"))
+    assertEquals(VoiceCommand.MAP_ZOOM_OUT, VoiceCommandRecognizer.parseVoiceCommand("zoom out"))
+    assertEquals(VoiceCommand.MAP_RECENTER, VoiceCommandRecognizer.parseVoiceCommand("recenter"))
+
+    val vm = HudViewModel(enablePeriodicDecay = false)
+    vm.onVoiceCommand(VoiceCommand.OPEN_PERMANENT)
+    vm.onVoiceCommand(VoiceCommand.MAP_ZOOM_IN)
+    val zoomedIn = vm.uiState.value.mapZoom
+    assertTrue(zoomedIn > 1.7f)
+    assertTrue(vm.uiState.value.mapTiltDegrees > 5f)
+
+    vm.onVoiceCommand(VoiceCommand.MAP_ZOOM_OUT)
+    assertEquals(1.0f, vm.uiState.value.mapZoom, 0.01f)
+    assertEquals(0f, vm.uiState.value.mapTiltDegrees, 0.01f)
+
+    vm.onVoiceCommand(VoiceCommand.MAP_ZOOM_IN)
+    vm.onVoiceCommand(VoiceCommand.MAP_RECENTER)
+    assertEquals(1.0f, vm.uiState.value.mapZoom, 0.01f)
+    assertEquals(0f, vm.uiState.value.mapPanEastDeg, 0.01f)
+    assertEquals(0f, vm.uiState.value.mapPanNorthDeg, 0.01f)
+  }
+
+  @Test
+  fun mentalVitals_baselineCalibratesAndScoresOnceFitted() {
+    val vm = HudViewModel(enablePeriodicDecay = false)
+    // First ~60 seconds in BASELINE: calibrating, score is null, band is UNKNOWN, HR present
+    var tMs = 1_000L
+    repeat(30) {
+      vm.stepMentalVitals(tMs)
+      tMs += 1_000L
+    }
+    val early = vm.uiState.value.mentalState
+    assertNull(early.score)
+    assertEquals(com.example.mental.MentalBand.UNKNOWN, early.band)
+    assertTrue(early.calibration > 0.1f)
+    assertTrue((early.heartRate ?: 0.0) > 50.0)
+
+    // After ~180 seconds on BASELINE: calibrated with high OK score
+    repeat(160) {
+      vm.stepMentalVitals(tMs)
+      tMs += 1_000L
+    }
+    val ready = vm.uiState.value.mentalState
+    assertTrue(ready.calibrated)
+    assertEquals(1.0f, ready.calibration, 0.01f)
+    assertTrue((ready.score ?: 0) >= 70)
+    assertEquals(com.example.mental.MentalBand.OK, ready.band)
   }
 }

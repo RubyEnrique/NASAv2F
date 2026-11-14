@@ -44,9 +44,11 @@ import androidx.compose.ui.unit.sp
 import com.example.ui.theme.IosGlassHairline
 import com.example.ui.theme.IosLabelPrimary
 import com.example.ui.theme.IosLabelSecondary
-import com.example.ui.theme.IosSfGreen
+import com.example.ui.theme.IosSfAmber
+import com.example.ui.theme.IosSfIndigo
 import com.example.ui.theme.IosSfPink
 import com.example.ui.theme.SpecularWhite
+import java.util.Locale
 import kotlin.math.exp
 import kotlin.math.pow
 import kotlinx.coroutines.delay
@@ -55,9 +57,13 @@ import kotlinx.coroutines.delay
 fun VitalsTelemetryWidget(
   modifier: Modifier = Modifier,
   heartRateBpm: Int = 86,
+  systolicBp: Int = 118,
+  diastolicBp: Int = 76,
+  spo2Percent: Int = 98,
+  coreTempCelsius: Float = 37.1f,
+  hydrationPercent: Int = 74,
 ) {
   var microOffset by remember { mutableIntStateOf(0) }
-  var spo2 by remember { mutableIntStateOf(98) }
 
   LaunchedEffect(Unit) {
     val driftCycle = intArrayOf(0, 1, 0, -1, 0, 2, 1, 0)
@@ -66,11 +72,12 @@ fun VitalsTelemetryWidget(
       delay(2400L)
       index = (index + 1) % driftCycle.size
       microOffset = driftCycle[index]
-      spo2 = if (index == 5) 99 else 98
     }
   }
 
   val displayBpm = (heartRateBpm + microOffset).coerceIn(80, 175)
+  val bpText = "$systolicBp/$diastolicBp"
+  val coreText = String.format(Locale.US, "%.1f\u00B0", coreTempCelsius)
 
   val infiniteTransition = rememberInfiniteTransition(label = "ecg_sweep")
   val phase by
@@ -108,7 +115,7 @@ fun VitalsTelemetryWidget(
   Box(
     modifier =
       modifier
-        .width(188.dp)
+        .width(206.dp)
         .testTag("vitals_hud_widget")
         .clip(cardShape)
         .background(frostedGlassBrush)
@@ -145,23 +152,37 @@ fun VitalsTelemetryWidget(
             ),
           modifier = Modifier.align(Alignment.Bottom).padding(bottom = 3.dp),
         )
-        Spacer(modifier = Modifier.width(7.dp))
-        Text(
-          text = "HR",
-          style =
-            TextStyle(
-              color = IosLabelSecondary,
-              fontFamily = FontFamily.SansSerif,
-              fontWeight = FontWeight.Medium,
-              fontSize = 7.5.sp,
-              letterSpacing = 0.3.sp,
-            ),
-        )
-        Spacer(modifier = Modifier.width(5.dp))
+        Spacer(modifier = Modifier.width(6.dp))
         EcgWaveform(
           phase = phase,
           modifier = Modifier.weight(1f).height(18.dp),
         )
+        Spacer(modifier = Modifier.width(6.dp))
+        Column(horizontalAlignment = Alignment.End) {
+          Text(
+            text = "BP",
+            style =
+              TextStyle(
+                color = IosLabelSecondary,
+                fontFamily = FontFamily.SansSerif,
+                fontWeight = FontWeight.Medium,
+                fontSize = 7.sp,
+                letterSpacing = 0.3.sp,
+              ),
+          )
+          Text(
+            text = bpText,
+            style =
+              TextStyle(
+                color = if (systolicBp >= 135) IosSfAmber else IosLabelPrimary,
+                fontFamily = FontFamily.SansSerif,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 10.sp,
+                fontFeatureSettings = "tnum",
+              ),
+            modifier = Modifier.testTag("vitals_bp_text"),
+          )
+        }
       }
 
       Spacer(modifier = Modifier.height(6.dp))
@@ -177,9 +198,14 @@ fun VitalsTelemetryWidget(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
       ) {
-        TelemetryCell(label = "SpO\u2082", value = "$spo2%", valueColor = IosLabelPrimary)
-        TelemetryCell(label = "CORE", value = "37.1\u00B0", valueColor = IosLabelPrimary)
-        TelemetryCell(label = "SUIT", value = "4.3psi", valueColor = IosSfGreen)
+        TelemetryCell(label = "SpO\u2082", value = "$spo2Percent%", valueColor = IosLabelPrimary)
+        TelemetryCell(label = "CORE", value = coreText, valueColor = IosLabelPrimary)
+        TelemetryCell(
+          label = "H\u2082O",
+          value = "$hydrationPercent%",
+          valueColor = IosSfIndigo,
+          valueTag = "vitals_h2o_text",
+        )
       }
     }
   }
@@ -190,6 +216,7 @@ private fun TelemetryCell(
   label: String,
   value: String,
   valueColor: Color,
+  valueTag: String? = null,
 ) {
   Column(horizontalAlignment = Alignment.CenterHorizontally) {
     Text(
@@ -214,6 +241,7 @@ private fun TelemetryCell(
           fontSize = 10.5.sp,
           fontFeatureSettings = "tnum",
         ),
+      modifier = if (valueTag != null) Modifier.testTag(valueTag) else Modifier,
     )
   }
 }
