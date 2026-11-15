@@ -33,6 +33,26 @@ class CrewLinkTest {
   }
 
   @Test
+  fun udpTransport_sendsAndReceivesOverARealSocket() {
+    val got = java.util.concurrent.LinkedBlockingQueue<CrewStatus>()
+    val port = 47000 + (System.nanoTime() % 900).toInt()
+    val t =
+      com.example.crew.CrewUdpTransport(
+        port = port,
+        onPacket = { s, _ -> got.add(s) },
+        extraTargets = { listOf(java.net.InetAddress.getByName("127.0.0.1")) },
+      )
+    t.start()
+    assertTrue("socket bound: ${t.lastError}", t.isRunning)
+    val sent = status("B", 18.381, 77.58, emergency = true)
+    t.send(sent)
+    val received = got.poll(3, java.util.concurrent.TimeUnit.SECONDS)
+    t.stop()
+    assertEquals(sent, received)
+    assertFalse(t.isRunning)
+  }
+
+  @Test
   fun geo_distanceAndBearing() {
     // 0.001 deg of latitude ~ 111 m due north; 0.001 deg longitude at 18.38 N ~ 105.5 m east.
     val (e1, n1) = Geo.offsetMeters(18.38, 77.58, 18.381, 77.58)
@@ -71,7 +91,9 @@ class CrewLinkTest {
 
     vm.onVoiceCommand(VoiceCommand.RunEmergency(1))
     assertTrue(vm.crewOutbound(3_000L).emergency)
-    assertEquals("Pressure Leak", vm.crewOutbound(3_000L).reason)
+    assertEquals("E-01 Pressure Leak", vm.crewOutbound(3_000L).reason)
+    vm.onVoiceCommand(VoiceCommand.RunEmergency(7)) // non-critical drills reach the crew too
+    assertTrue(vm.crewOutbound(3_500L).emergency)
     vm.onVoiceCommand(VoiceCommand.END_ALL_EMERGENCIES)
     assertEquals(EmergencyDrill.NONE, vm.uiState.value.activeDrill)
     assertFalse(vm.crewOutbound(4_000L).emergency)

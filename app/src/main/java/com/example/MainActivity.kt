@@ -28,7 +28,7 @@ import com.example.alert.AlertAnnouncer
 import com.example.hud.HudEvent
 import com.example.hud.HudViewModel
 import com.example.hud.SpatialHudScreen
-import com.example.crew.CrewLink
+import com.example.crew.LanCrewLink
 import com.example.nasa.DonkiClient
 import com.example.sensor.BatteryStatusMonitor
 import com.example.sensor.BodySensorMonitor
@@ -52,7 +52,7 @@ class MainActivity : ComponentActivity() {
   private lateinit var voiceCommandRecognizer: VoiceCommandRecognizer
   private lateinit var alertAnnouncer: AlertAnnouncer
   private lateinit var bodySensorMonitor: BodySensorMonitor
-  private lateinit var crewLink: CrewLink
+  private lateinit var crewLink: LanCrewLink
 
   private var isPermissionPromptPending = false
   private var hasAttemptedLocationPrompt = false
@@ -81,7 +81,6 @@ class MainActivity : ComponentActivity() {
       if (locationGranted) {
         gpsDistanceMonitor.start()
       }
-      if (hasCrewPermissions()) crewLink.start()
       hideSystemBars()
     }
 
@@ -102,10 +101,7 @@ class MainActivity : ComponentActivity() {
         onAbsoluteFix = viewModel::onAbsoluteFix,
       )
     voiceCommandRecognizer = VoiceCommandRecognizer(this, viewModel::onVoiceCommand, viewModel::onMicStatus)
-    alertAnnouncer = AlertAnnouncer(this) { speaking ->
-      voiceCommandRecognizer.setMuted(speaking)
-      if (!speaking) viewModel.onSpeechFinished()
-    }
+    alertAnnouncer = AlertAnnouncer(this) { speaking -> voiceCommandRecognizer.setMuted(speaking) }
     bodySensorMonitor = BodySensorMonitor(this, viewModel::onStep, viewModel::onLightLux)
     startSpaceWeatherSync()
     val prefs = getSharedPreferences("crew", MODE_PRIVATE)
@@ -114,7 +110,9 @@ class MainActivity : ComponentActivity() {
         ?: java.util.UUID.randomUUID().toString().take(4).uppercase().also { prefs.edit().putString("id", it).apply() }
     val crewName = "Crew-$crewId"
     viewModel.setCrewIdentity(crewId, crewName)
-    crewLink = CrewLink(this, crewId, crewName, onStatus = { viewModel.onCrewPacket(it) }, onLinkChanged = viewModel::onCrewLinkChanged)
+    // Same-network crew link: runs for the whole life of the activity (also while idle), no extra permissions.
+    crewLink = LanCrewLink(this, onStatus = { viewModel.onCrewPacket(it) }, onLinkChanged = viewModel::onCrewLinkChanged)
+    crewLink.start()
     startCrewBroadcast()
 
     val hasCamera = hasPermission(Manifest.permission.CAMERA)
@@ -194,7 +192,6 @@ class MainActivity : ComponentActivity() {
     if (hasLocation) {
       gpsDistanceMonitor.start()
     }
-    if (hasCrewPermissions()) crewLink.start()
   }
 
   override fun onPause() {
@@ -203,7 +200,6 @@ class MainActivity : ComponentActivity() {
     bodySensorMonitor.stop()
     gpsDistanceMonitor.stop()
     voiceCommandRecognizer.stop()
-    crewLink.stop()
     super.onPause()
   }
 
@@ -273,28 +269,15 @@ class MainActivity : ComponentActivity() {
         add(Manifest.permission.ACCESS_FINE_LOCATION)
         add(Manifest.permission.ACCESS_COARSE_LOCATION)
       }
-      crewPermissions().filterNot(::hasPermission).forEach(::add)
     }
   }
 
-  /** Nearby Connections needs Bluetooth (API 31+) and nearby Wi-Fi (API 33+) runtime grants. */
-  private fun crewPermissions(): List<String> = buildList {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-      add(Manifest.permission.BLUETOOTH_SCAN)
-      add(Manifest.permission.BLUETOOTH_ADVERTISE)
-      add(Manifest.permission.BLUETOOTH_CONNECT)
-    }
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) add(Manifest.permission.NEARBY_WIFI_DEVICES)
-  }
-
-  private fun hasCrewPermissions(): Boolean = hasLocationPermission() && crewPermissions().all(::hasPermission)
-
-  /** Shares this wearer's status with the crew every 2 s while the link is up. */
+  /** Shares this wearer's status with everyone on the same network every second. */
   private fun startCrewBroadcast() {
-    lifecycleScope.launch {
+    lifecycleScope.launch(Dispatchers.IO) {
       while (isActive) {
         crewLink.broadcast(viewModel.crewOutbound())
-        delay(2_000L)
+        delay(1_000L)
       }
     }
   }
@@ -363,6 +346,7 @@ class MainActivity : ComponentActivity() {
   }
 
   override fun onDestroy() {
+    crewLink.stop()
     alertAnnouncer.shutdown()
     super.onDestroy()
   }

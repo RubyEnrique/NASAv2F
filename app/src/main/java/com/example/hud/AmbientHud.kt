@@ -10,7 +10,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -107,13 +106,17 @@ internal fun GlanceStrip(s: HudUiState, modifier: Modifier = Modifier) {
       },
       "glance_rad_text",
     )
-    if (s.crewLinkActive && s.crew.isNotEmpty()) {
+    if (s.crewLinkActive) {
       Divider()
       val help = s.crew.firstOrNull { it.emergency }
-      val nearest = help ?: s.crew.first()
+      val nearest = help ?: s.crew.firstOrNull()
       Glance(
-        if (help != null) "SOS" else "CREW ${s.crew.size}",
-        nearest.distanceMeters?.let { "${it.roundToInt()} m" } ?: "linked",
+        if (help != null) "SOS ${help.name.removePrefix("Crew-")}" else "CREW ${s.crew.size}",
+        when {
+          nearest == null -> "searching"
+          nearest.distanceMeters != null -> "${nearest.distanceMeters.roundToInt()} m"
+          else -> "linked"
+        },
         if (help != null) Ios.Red else Vision.Text2,
         "glance_crew_text",
       )
@@ -138,29 +141,4 @@ private fun Glance(icon: String, value: String, color: Color, tag: String) {
 @Composable
 private fun Divider() {
   Box(Modifier.padding(vertical = 6.dp).width(18.dp).height(0.6.dp).background(Color.White.copy(alpha = 0.22f)))
-}
-
-/** Small top-left card while the voice tutorial runs: progress, step title and what to do next. */
-@Composable
-internal fun TutorialCard(t: com.example.tutorial.TutorialState, modifier: Modifier = Modifier) {
-  val shape = RoundedCornerShape(16.dp)
-  Column(
-    modifier
-      .testTag("tutorial_card")
-      .width(210.dp)
-      .clip(shape)
-      .background(Color.Black.copy(alpha = 0.55f))
-      .border(0.5.dp, Color.White.copy(alpha = 0.22f), shape)
-      .padding(horizontal = 12.dp, vertical = 9.dp),
-  ) {
-    Text("Tutorial · ${t.index + 1} of ${t.total}", style = hudText(7.5.sp, Vision.Text2, FontWeight.Medium))
-    Spacer(Modifier.height(4.dp))
-    Box(Modifier.fillMaxWidth().height(2.dp).clip(RoundedCornerShape(50)).background(Color.White.copy(alpha = 0.15f))) {
-      Box(Modifier.fillMaxWidth((t.index + 1f) / t.total).height(2.dp).background(Color.White))
-    }
-    Spacer(Modifier.height(6.dp))
-    Text(t.title, style = hudText(11.sp), modifier = Modifier.testTag("tutorial_title_text"))
-    Spacer(Modifier.height(2.dp))
-    Text(t.hint, style = hudText(8.5.sp, if (t.waitingFor == com.example.tutorial.TutorialTrigger.NONE) Vision.Text2 else Color.White, FontWeight.Medium))
-  }
 }

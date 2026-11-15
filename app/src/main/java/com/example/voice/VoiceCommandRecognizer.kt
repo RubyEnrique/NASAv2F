@@ -39,11 +39,6 @@ sealed interface VoiceCommand {
   data object RECENTER_VIEW : VoiceCommand
   data object CENTER_LOCK : VoiceCommand
   data object END_ALL_EMERGENCIES : VoiceCommand
-  data object TUTORIAL_ON : VoiceCommand
-  data object TUTORIAL_OFF : VoiceCommand
-  data object TUTORIAL_NEXT : VoiceCommand
-  data object TUTORIAL_BACK : VoiceCommand
-  data object TUTORIAL_REPEAT : VoiceCommand
   data object ACKNOWLEDGE : VoiceCommand
   data object TOGGLE_EYE_PREVIEW : VoiceCommand
   data object CALIBRATE_MIC : VoiceCommand
@@ -491,8 +486,7 @@ class VoiceCommandRecognizer(
         "emergency five", "emergency six", "emergency seven", "emergency eight", "emergency nine",
         "emergency ten", "clear drill", "stop drill", "reset drills", "zoom in", "zoom out",
         "recenter", "recenter view", "center", "center lock", "keep centered", "center map", "reset map",
-        "end all emergencies", "end emergencies", "all clear", "tutorial", "tutorial on", "start tutorial",
-        "tutorial off", "stop tutorial", "end tutorial", "next", "skip", "back", "previous", "repeat", "acknowledge", "copy", "silence",
+        "end all emergencies", "end emergencies", "all clear", "acknowledge", "copy", "silence",
         "eyes", "eye preview", "show eyes", "hide eyes", "calibrate", "calibrate microphone",
         "sensitivity up", "sensitivity down", "[unk]",
       )
@@ -546,11 +540,6 @@ class VoiceCommandRecognizer(
 
       fun has(pattern: String) = Regex("\\b($pattern)\\b").containsMatchIn(normalized)
       return when {
-        has("tutorial off|stop tutorial|end tutorial") -> VoiceCommand.TUTORIAL_OFF
-        has("tutorial on|start tutorial|tutorial") -> VoiceCommand.TUTORIAL_ON
-        has("next|skip") -> VoiceCommand.TUTORIAL_NEXT
-        has("back|previous") -> VoiceCommand.TUTORIAL_BACK
-        has("repeat") -> VoiceCommand.TUTORIAL_REPEAT
         normalized.contains("dashboard open") || normalized.contains("open dashboard") -> VoiceCommand.OPEN_PERMANENT
         normalized.contains("dashboard close") || normalized.contains("close dashboard") -> VoiceCommand.CLOSE_PERMANENT
         has("calibrate|calibrate microphone") -> VoiceCommand.CALIBRATE_MIC

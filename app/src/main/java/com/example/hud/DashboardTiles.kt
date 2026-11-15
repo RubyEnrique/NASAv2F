@@ -382,14 +382,15 @@ private fun DistanceBody(s: HudUiState) {
 }
 
 internal fun crewSummary(s: HudUiState): String {
-  if (!s.crewLinkActive) return "Crew link off"
+  if (!s.crewLinkActive) return "Crew link off" + (s.crewLinkError?.let { " · $it" } ?: "")
   val nearest = s.crew.firstOrNull { it.distanceMeters != null }
   val help = s.crew.firstOrNull { it.emergency }
+  val me = "${s.crewSelfName} @ ${s.crewLocalIp}"
   return when {
     help != null -> "${help.name} needs help" + (help.distanceMeters?.let { " · ${it.roundToInt()} m" } ?: "")
-    s.crew.isEmpty() -> "Crew link · searching"
-    nearest != null -> "Crew ${s.crew.size} · nearest ${nearest.distanceMeters!!.roundToInt()} m"
-    else -> "Crew ${s.crew.size} linked"
+    s.crew.isEmpty() -> "Wi-Fi link · $me · searching"
+    nearest != null -> "Crew ${s.crew.size} · nearest ${nearest.distanceMeters!!.roundToInt()} m · $me"
+    else -> "Crew ${s.crew.size} linked · $me"
   }
 }
 
