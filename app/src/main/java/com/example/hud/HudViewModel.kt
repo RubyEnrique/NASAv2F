@@ -4,6 +4,7 @@ import android.os.SystemClock
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.body.BodyMaintenanceState
+import com.example.crew.CrewLinkStats
 import com.example.crew.CrewMember
 import com.example.crew.CrewRoster
 import com.example.crew.CrewStatus
@@ -152,9 +153,7 @@ data class HudUiState(
   val centerLocked: Boolean = false,
   // Crew link (phone-to-phone)
   val crew: List<CrewMember> = emptyList(),
-  val crewLocalIp: String = "",
-  val crewLinkError: String? = null,
-  val crewLinkActive: Boolean = false,
+  val crewLink: CrewLinkStats = CrewLinkStats(),
   val crewSelfName: String = "",
   val hasAbsoluteFix: Boolean = false,
   val lastSwipeDirection: SwipeDirection? = null,
@@ -433,11 +432,8 @@ class HudViewModel(
     if (!_uiState.value.hasAbsoluteFix) _uiState.update { it.copy(hasAbsoluteFix = true) }
   }
 
-  fun onCrewLinkChanged(active: Boolean, localIp: String, error: String?) {
-    _uiState.update {
-      if (it.crewLinkActive == active && it.crewLocalIp == localIp && it.crewLinkError == error) it
-      else it.copy(crewLinkActive = active, crewLocalIp = localIp, crewLinkError = error)
-    }
+  fun onCrewLinkChanged(stats: CrewLinkStats) {
+    _uiState.update { if (it.crewLink == stats) it else it.copy(crewLink = stats) }
   }
 
   fun onCrewPacket(status: CrewStatus, nowMs: Long = wallClockMs()) {

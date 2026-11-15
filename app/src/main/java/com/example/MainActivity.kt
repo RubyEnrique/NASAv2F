@@ -111,7 +111,7 @@ class MainActivity : ComponentActivity() {
     val crewName = "Crew-$crewId"
     viewModel.setCrewIdentity(crewId, crewName)
     // Same-network crew link: runs for the whole life of the activity (also while idle), no extra permissions.
-    crewLink = LanCrewLink(this, onStatus = { viewModel.onCrewPacket(it) }, onLinkChanged = viewModel::onCrewLinkChanged)
+    crewLink = LanCrewLink(this, crewId, onStatus = { viewModel.onCrewPacket(it) }, onLinkChanged = viewModel::onCrewLinkChanged)
     crewLink.start()
     startCrewBroadcast()
 

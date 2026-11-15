@@ -106,7 +106,7 @@ internal fun GlanceStrip(s: HudUiState, modifier: Modifier = Modifier) {
       },
       "glance_rad_text",
     )
-    if (s.crewLinkActive) {
+    if (s.crewLink.active) {
       Divider()
       val help = s.crew.firstOrNull { it.emergency }
       val nearest = help ?: s.crew.firstOrNull()

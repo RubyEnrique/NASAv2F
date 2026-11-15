@@ -10,8 +10,9 @@ import android.net.wifi.WifiManager
  */
 class LanCrewLink(
   context: Context,
+  selfId: String,
   onStatus: (CrewStatus) -> Unit,
-  private val onLinkChanged: (active: Boolean, localIp: String, error: String?) -> Unit,
+  private val onLinkChanged: (CrewLinkStats) -> Unit,
 ) {
   private val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
   private val multicastLock = wifi?.createMulticastLock("crew-link")?.apply { setReferenceCounted(false) }
@@ -22,15 +23,14 @@ class LanCrewLink(
         "crew-link",
       )
       ?.apply { setReferenceCounted(false) }
-  private val transport = CrewUdpTransport(onPacket = { status, _ -> onStatus(status) })
+  private val transport = CrewUdpTransport(selfId = selfId, onPacket = { status, _ -> onStatus(status) })
 
   fun start() {
     try {
       multicastLock?.acquire()
       wifiLock?.acquire()
     } catch (_: Throwable) {}
-    transport.start()
-    report()
+    Thread({ transport.start() }, "crew-start").start() // never bind sockets on the main thread
   }
 
   fun stop() {
@@ -43,11 +43,9 @@ class LanCrewLink(
   }
 
   fun broadcast(status: CrewStatus) {
-    if (!transport.isRunning) transport.start()
     transport.send(status)
     report()
   }
 
-  private fun report() =
-    onLinkChanged(transport.isRunning, CrewUdpTransport.localAddresses().firstOrNull() ?: "no network", transport.lastError)
+  private fun report() = onLinkChanged(transport.stats())
 }

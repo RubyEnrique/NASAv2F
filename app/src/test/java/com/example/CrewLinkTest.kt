@@ -38,17 +38,26 @@ class CrewLinkTest {
     val port = 47000 + (System.nanoTime() % 900).toInt()
     val t =
       com.example.crew.CrewUdpTransport(
+        selfId = "B",
         port = port,
         onPacket = { s, _ -> got.add(s) },
         extraTargets = { listOf(java.net.InetAddress.getByName("127.0.0.1")) },
+        subnetSweep = false,
       )
     t.start()
     assertTrue("socket bound: ${t.lastError}", t.isRunning)
     val sent = status("B", 18.381, 77.58, emergency = true)
     t.send(sent)
     val received = got.poll(3, java.util.concurrent.TimeUnit.SECONDS)
+    val stats = t.stats()
     t.stop()
     assertEquals(sent, received)
+    assertTrue("sent counted: $stats", stats.sent >= 1)
+    assertTrue("own packet recognised as self (receiver self-check): $stats", stats.heardSelf >= 1)
+    assertEquals(0L, stats.heardOthers)
+    assertTrue(com.example.crew.CrewUdpTransport.isLocalLan("wlan0"))
+    assertTrue(com.example.crew.CrewUdpTransport.isLocalLan("ap0"))
+    assertFalse("never sweep mobile data", com.example.crew.CrewUdpTransport.isLocalLan("rmnet_data0"))
     assertFalse(t.isRunning)
   }
 
