@@ -5,6 +5,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.body.BodyMaintenanceState
 import com.example.crew.CrewMember
+import com.example.tutorial.TutorialScript
+import com.example.tutorial.TutorialState
+import com.example.tutorial.TutorialTrigger
 import com.example.crew.CrewRoster
 import com.example.crew.CrewStatus
 import com.example.body.GravityLoadModel
@@ -156,6 +159,8 @@ data class HudUiState(
   val crewLinkActive: Boolean = false,
   val crewSelfName: String = "",
   val hasAbsoluteFix: Boolean = false,
+  /** Non-null while the voice tutorial is running. */
+  val tutorial: TutorialState? = null,
   val lastSwipeDirection: SwipeDirection? = null,
   val swipeCueId: Long = 0L,
 ) {
@@ -266,6 +271,11 @@ class HudViewModel(
   private var selfLat: Double? = null
   private var selfLon: Double? = null
   private val crewEmergencyAnnouncedMs = HashMap<String, Long>()
+
+  // Tutorial
+  private var tutorialIndex = -1
+  private var tutorialAwaitingSpeech = false
+  private var tutorialSpeechDoneMs: Long? = null
   private var motorSteadinessSmoothed: Double? = null
 
   private fun safeElapsedRealtimeMs(): Long {
@@ -317,6 +327,7 @@ class HudViewModel(
     _uiState.update { state -> applyPredictions(state, nowMs, wallClockMs(), dtSec = 1.0) }
     evaluateAlerts(nowMs)
     refreshCrew(wallClockMs())
+    maybeAutoAdvanceTutorial(nowMs)
   }
 
   private fun wallClockMs(): Long = System.currentTimeMillis()
@@ -639,7 +650,7 @@ class HudViewModel(
       }
       CognitiveLevel.WARNING -> {
         lastEmergencySpokenMs = null
-        if (!acked && lastAlertLevel.ordinal < CognitiveLevel.WARNING.ordinal) {
+        if (!acked && tutorialIndex < 0 && lastAlertLevel.ordinal < CognitiveLevel.WARNING.ordinal) {
           _events.tryEmit(HudEvent.Speak("Warning. Cognitive load ${state.cognitive.index}. $pulse. Pause and slow your breathing."))
         }
       }
@@ -843,6 +854,68 @@ class HudViewModel(
     _uiState.update { it.copy(lastSwipeDirection = direction, swipeCueId = it.swipeCueId + 1L) }
   }
 
+  // ---------------------------------------------------------------- Tutorial
+
+  fun startTutorial() = tutorialGo(0)
+
+  fun stopTutorial() {
+    if (tutorialIndex < 0) return
+    tutorialIndex = -1
+    tutorialAwaitingSpeech = false
+    tutorialSpeechDoneMs = null
+    _uiState.update { it.copy(tutorial = null) }
+    _events.tryEmit(HudEvent.Speak("Tutorial off."))
+  }
+
+  /** Enters step [index] (finishing the tutorial past the last step). */
+  internal fun tutorialGo(index: Int) {
+    val steps = TutorialScript.steps
+    if (index >= steps.size) {
+      tutorialIndex = -1
+      tutorialAwaitingSpeech = false
+      tutorialSpeechDoneMs = null
+      _uiState.update { it.copy(tutorial = null) }
+      return
+    }
+    tutorialIndex = index
+    val step = steps[index]
+    when {
+      step.closeDashboard -> closeDashboard()
+      step.page != null -> {
+        if (!_uiState.value.isDashboardOpen) openDashboard(DashboardMode.PERMANENT)
+        selectDashboardPage(step.page)
+      }
+    }
+    _uiState.update { it.copy(tutorial = TutorialScript.stateFor(index)) }
+    tutorialAwaitingSpeech = true
+    tutorialSpeechDoneMs = null
+    _events.tryEmit(HudEvent.Speak(step.speech))
+  }
+
+  /** Called when the wearer performs a taught action; advances the matching (or a narrative) step. */
+  internal fun tutorialTrigger(trigger: TutorialTrigger) {
+    if (tutorialIndex < 0) return
+    val waiting = TutorialScript.steps[tutorialIndex].waitFor
+    if (waiting == trigger || (waiting == TutorialTrigger.NONE && trigger == TutorialTrigger.ACKNOWLEDGE)) {
+      tutorialGo(tutorialIndex + 1)
+    }
+  }
+
+  /** TTS finished an utterance; narrative steps then advance after a short pause. */
+  fun onSpeechFinished(nowMs: Long = safeElapsedRealtimeMs()) {
+    if (tutorialIndex >= 0 && tutorialAwaitingSpeech) {
+      tutorialAwaitingSpeech = false
+      tutorialSpeechDoneMs = nowMs
+    }
+  }
+
+  internal fun maybeAutoAdvanceTutorial(nowMs: Long) {
+    val done = tutorialSpeechDoneMs ?: return
+    if (tutorialIndex < 0) return
+    if (TutorialScript.steps[tutorialIndex].waitFor != TutorialTrigger.NONE) return
+    if (nowMs - done >= TUTORIAL_AUTO_ADVANCE_MS) tutorialGo(tutorialIndex + 1)
+  }
+
   fun toggleCenterLock() {
     _uiState.update { it.copy(centerLocked = !it.centerLocked) }
     recenterView()
@@ -874,12 +947,27 @@ class HudViewModel(
 
       update.action?.let { action ->
         when (action) {
-          GestureAction.OPEN_DASHBOARD -> openDashboard(DashboardMode.PERMANENT)
+          GestureAction.OPEN_DASHBOARD -> {
+            openDashboard(DashboardMode.PERMANENT)
+            tutorialTrigger(TutorialTrigger.OPEN_DASHBOARD)
+          }
           GestureAction.CLOSE_DASHBOARD -> closeDashboard()
-          GestureAction.NEXT_TILE -> stepDashboardPage(SwipeDirection.NEXT)
-          GestureAction.PREVIOUS_TILE -> stepDashboardPage(SwipeDirection.PREVIOUS)
-          GestureAction.TOGGLE_CENTER_LOCK -> toggleCenterLock()
-          GestureAction.ACKNOWLEDGE -> acknowledgeAlerts()
+          GestureAction.NEXT_TILE -> {
+            stepDashboardPage(SwipeDirection.NEXT)
+            tutorialTrigger(TutorialTrigger.SWIPE)
+          }
+          GestureAction.PREVIOUS_TILE -> {
+            stepDashboardPage(SwipeDirection.PREVIOUS)
+            tutorialTrigger(TutorialTrigger.SWIPE)
+          }
+          GestureAction.TOGGLE_CENTER_LOCK -> {
+            toggleCenterLock()
+            tutorialTrigger(TutorialTrigger.CENTER_LOCK)
+          }
+          GestureAction.ACKNOWLEDGE -> {
+            acknowledgeAlerts()
+            tutorialTrigger(TutorialTrigger.ACKNOWLEDGE)
+          }
           GestureAction.TOGGLE_EYE_PREVIEW -> toggleEyePreview()
           GestureAction.CLEAR_DRILL -> setDrill(EmergencyDrill.NONE)
         }
@@ -958,11 +1046,17 @@ class HudViewModel(
         VoiceCommand.OPEN_PERMANENT -> {
           classifier.reset()
           openDashboard(DashboardMode.PERMANENT)
+          tutorialTrigger(TutorialTrigger.OPEN_DASHBOARD)
         }
         VoiceCommand.CLOSE_PERMANENT -> {
           classifier.reset()
           closeDashboard()
         }
+        VoiceCommand.TUTORIAL_ON -> startTutorial()
+        VoiceCommand.TUTORIAL_OFF -> stopTutorial()
+        VoiceCommand.TUTORIAL_NEXT -> if (tutorialIndex >= 0) tutorialGo(tutorialIndex + 1)
+        VoiceCommand.TUTORIAL_BACK -> if (tutorialIndex >= 0) tutorialGo((tutorialIndex - 1).coerceAtLeast(0))
+        VoiceCommand.TUTORIAL_REPEAT -> if (tutorialIndex >= 0) tutorialGo(tutorialIndex)
         VoiceCommand.NAVIGATE_RADIATION -> if (open) selectDashboardPage(DashboardPage.RADIATION)
         VoiceCommand.NAVIGATE_ISOLATION -> if (open) selectDashboardPage(DashboardPage.ISOLATION)
         VoiceCommand.NAVIGATE_DISTANCE -> if (open) selectDashboardPage(DashboardPage.DISTANCE)
@@ -974,9 +1068,15 @@ class HudViewModel(
         VoiceCommand.MAP_ZOOM_OUT -> if (open && state.currentPage == DashboardPage.ENVIRONMENT) adjustMapZoom(-VOICE_ZOOM_STEP)
         VoiceCommand.MAP_RECENTER -> if (open && state.currentPage == DashboardPage.ENVIRONMENT) recenterMap()
         VoiceCommand.RECENTER_VIEW -> if (open) recenterView()
-        VoiceCommand.CENTER_LOCK -> toggleCenterLock()
+        VoiceCommand.CENTER_LOCK -> {
+          toggleCenterLock()
+          tutorialTrigger(TutorialTrigger.CENTER_LOCK)
+        }
         VoiceCommand.END_ALL_EMERGENCIES -> endAllEmergencies()
-        VoiceCommand.ACKNOWLEDGE -> acknowledgeAlerts()
+        VoiceCommand.ACKNOWLEDGE -> {
+          acknowledgeAlerts()
+          tutorialTrigger(TutorialTrigger.ACKNOWLEDGE)
+        }
         VoiceCommand.TOGGLE_EYE_PREVIEW -> toggleEyePreview()
         VoiceCommand.CALIBRATE_MIC -> _events.tryEmit(HudEvent.RecalibrateMic)
         VoiceCommand.SENSITIVITY_UP,
@@ -1008,6 +1108,7 @@ class HudViewModel(
     private const val OXYGEN_RESERVE_PCT = 5.0
     private const val EXERCISE_HR_BPM = 105
     const val CREW_ALERT_REPEAT_MS = 60_000L
+    const val TUTORIAL_AUTO_ADVANCE_MS = 2_500L
 
     private val WIND_CYCLE = floatArrayOf(6.4f, 6.5f, 6.4f, 6.3f, 6.4f, 6.6f, 6.5f, 6.4f)
     private const val EYE_PUBLISH_INTERVAL_MS = 250L

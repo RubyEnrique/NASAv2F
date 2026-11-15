@@ -194,6 +194,8 @@ fun SpatialHudScreen(
       GameGradientCompass(headingDegrees = uiState.headingDegrees, batteryPercent = uiState.batteryPercent, crew = uiState.crew)
     }
 
+    uiState.tutorial?.let { TutorialCard(it, Modifier.align(Alignment.TopStart).displayCutoutPadding().padding(top = 14.dp, start = 16.dp)) }
+
     // Everything except the compass lives on the periphery: the centre and the ground stay clear.
     Box(Modifier.align(Alignment.TopEnd).displayCutoutPadding().padding(top = 70.dp, end = 16.dp)) { AlertBanner(uiState) }
 

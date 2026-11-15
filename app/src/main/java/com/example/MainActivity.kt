@@ -102,7 +102,10 @@ class MainActivity : ComponentActivity() {
         onAbsoluteFix = viewModel::onAbsoluteFix,
       )
     voiceCommandRecognizer = VoiceCommandRecognizer(this, viewModel::onVoiceCommand, viewModel::onMicStatus)
-    alertAnnouncer = AlertAnnouncer(this) { speaking -> voiceCommandRecognizer.setMuted(speaking) }
+    alertAnnouncer = AlertAnnouncer(this) { speaking ->
+      voiceCommandRecognizer.setMuted(speaking)
+      if (!speaking) viewModel.onSpeechFinished()
+    }
     bodySensorMonitor = BodySensorMonitor(this, viewModel::onStep, viewModel::onLightLux)
     startSpaceWeatherSync()
     val prefs = getSharedPreferences("crew", MODE_PRIVATE)
