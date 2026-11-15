@@ -110,7 +110,7 @@ private fun MindSidebar(s: HudUiState, modifier: Modifier) {
     Spacer(Modifier.weight(1f))
     Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
       QuickChip("Eyes", s.eyeTrackingStatus == EyeTrackingStatus.ACTIVE, Ios.Cyan, Modifier.weight(1f))
-      QuickChip("Mic", s.mic.speaking || !s.mic.calibrating, Ios.Green, Modifier.weight(1f))
+      QuickChip("Lock", s.centerLocked, Ios.Label, Modifier.weight(1f))
     }
     Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
       QuickChip("Breathe", cog.level != CognitiveLevel.NOMINAL, Ios.Yellow, Modifier.weight(1f))
@@ -186,7 +186,7 @@ internal fun GestureOrnament(s: HudUiState, modifier: Modifier = Modifier) {
   ) {
     GestureHint(Glyph.HOLD, "Palm", active == com.example.gesture.HandPose.OPEN_PALM)
     GestureHint(Glyph.SWIPE, "Swipe", false)
-    GestureHint(Glyph.CENTER, "Point", active == com.example.gesture.HandPose.POINTING_UP)
+    GestureHint(Glyph.CENTER, "Lock", active == com.example.gesture.HandPose.POINTING_UP)
     GestureHint(Glyph.ACK, "Thumb", active == com.example.gesture.HandPose.THUMB_UP)
     GestureHint(Glyph.EYE, "V", active == com.example.gesture.HandPose.VICTORY)
     GestureHint(Glyph.CLOSE, "Fist", active == com.example.gesture.HandPose.CLOSED_FIST)

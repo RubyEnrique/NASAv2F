@@ -191,7 +191,7 @@ fun SpatialHudScreen(
       modifier = Modifier.align(Alignment.TopCenter).displayCutoutPadding().padding(top = 6.dp),
       horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-      GameGradientCompass(headingDegrees = uiState.headingDegrees, batteryPercent = uiState.batteryPercent)
+      GameGradientCompass(headingDegrees = uiState.headingDegrees, batteryPercent = uiState.batteryPercent, crew = uiState.crew)
     }
 
     // Everything except the compass lives on the periphery: the centre and the ground stay clear.
@@ -494,8 +494,13 @@ private fun SpatialDashboard(
 private fun AlertBanner(uiState: HudUiState) {
   val cog = uiState.cognitive
   val rad = uiState.radiation
+  val crewHelp = uiState.crew.firstOrNull { it.emergency }
   val (text, color) =
     when {
+      crewHelp != null ->
+        "Crew ${crewHelp.name} needs help" +
+          (crewHelp.distanceMeters?.let { " · ${it.roundToInt()} m" } ?: "") +
+          (crewHelp.bearingDeg?.let { " · %03d°".format(it.roundToInt()) } ?: "") to Ios.Red
       cog.level == CognitiveLevel.EMERGENCY ->
         "Emergency · load ${cog.index} · pulse ${if (uiState.isBiometricSensorLost) "--" else uiState.heartRateBpm} · " +
           (if (uiState.alertAcknowledged) "acknowledged" else "thumbs up to acknowledge") to Ios.Red

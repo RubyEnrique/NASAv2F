@@ -37,6 +37,8 @@ sealed interface VoiceCommand {
   data object MAP_ZOOM_OUT : VoiceCommand
   data object MAP_RECENTER : VoiceCommand
   data object RECENTER_VIEW : VoiceCommand
+  data object CENTER_LOCK : VoiceCommand
+  data object END_ALL_EMERGENCIES : VoiceCommand
   data object ACKNOWLEDGE : VoiceCommand
   data object TOGGLE_EYE_PREVIEW : VoiceCommand
   data object CALIBRATE_MIC : VoiceCommand
@@ -483,7 +485,8 @@ class VoiceCommandRecognizer(
         "emergency zero", "emergency one", "emergency two", "emergency three", "emergency four",
         "emergency five", "emergency six", "emergency seven", "emergency eight", "emergency nine",
         "emergency ten", "clear drill", "stop drill", "reset drills", "zoom in", "zoom out",
-        "recenter", "recenter view", "center map", "reset map", "acknowledge", "copy", "silence",
+        "recenter", "recenter view", "center", "center lock", "keep centered", "center map", "reset map",
+        "end all emergencies", "end emergencies", "all clear", "acknowledge", "copy", "silence",
         "eyes", "eye preview", "show eyes", "hide eyes", "calibrate", "calibrate microphone",
         "sensitivity up", "sensitivity down", "[unk]",
       )
@@ -529,6 +532,7 @@ class VoiceCommandRecognizer(
         transcript.lowercase().replace(Regex("[^a-z0-9\\s]"), " ").replace(Regex("\\s+"), " ").trim()
       if (normalized.isEmpty()) return null
 
+      if (Regex("\\b(end all emergencies|end emergencies|all clear)\\b").containsMatchIn(normalized)) return VoiceCommand.END_ALL_EMERGENCIES
       if (CLEAR_DRILL_PATTERN.containsMatchIn(normalized)) return VoiceCommand.RunEmergency(0)
       EMERGENCY_PATTERN.find(normalized)?.let { match ->
         parseEmergencyNumberToken(match.groupValues[1])?.let { return VoiceCommand.RunEmergency(it) }
@@ -545,6 +549,7 @@ class VoiceCommandRecognizer(
         has("zoom out") -> VoiceCommand.MAP_ZOOM_OUT
         has("center map|reset map") -> VoiceCommand.MAP_RECENTER
         has("recenter|recenter view") -> VoiceCommand.RECENTER_VIEW
+        has("center|center lock|keep centered") -> VoiceCommand.CENTER_LOCK
         has("acknowledge|copy|silence") -> VoiceCommand.ACKNOWLEDGE
         has("eyes|eye preview|show eyes|hide eyes") -> VoiceCommand.TOGGLE_EYE_PREVIEW
         has("radiation|shield|shelter") -> VoiceCommand.NAVIGATE_RADIATION

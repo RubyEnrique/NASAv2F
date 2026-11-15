@@ -29,6 +29,7 @@ class GpsDistanceMonitor(
   private val onLocationSample: (deltaMeters: Float, speedMps: Float, timestampMs: Long) -> Unit,
   private val onFixStatusChanged: (Boolean) -> Unit = {},
   private val onVectorDelta: (deltaEastMeters: Float, deltaNorthMeters: Float) -> Unit = { _, _ -> },
+  private val onAbsoluteFix: (lat: Double, lon: Double) -> Unit = { _, _ -> },
 ) {
 
   private val appContext = context.applicationContext
@@ -180,6 +181,7 @@ class GpsDistanceMonitor(
 
   private fun handleLocation(location: Location, nowMs: Long) {
     val accuracy = if (location.hasAccuracy()) location.accuracy else Float.MAX_VALUE
+    if (accuracy <= MAX_INDOOR_ACCURACY_METERS) onAbsoluteFix(location.latitude, location.longitude)
     val rawSpeed = if (location.hasSpeed()) location.speed else -1f
 
     // Ignore out-of-order fixes older than the current anchor.
