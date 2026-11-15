@@ -13,6 +13,7 @@ import kotlin.math.sin
 class HeadingSensorMonitor(
   context: Context,
   private val onHeadingChanged: (Float) -> Unit,
+  private val onPitchChanged: (Float) -> Unit = {},
 ) : SensorEventListener {
 
   private val sensorManager =
@@ -34,6 +35,8 @@ class HeadingSensorMonitor(
   private var smoothSin = 0f
   private var smoothCos = 1f
   private var hasSmoothedHeading = false
+  private var smoothPitch = 0f
+  private var hasSmoothedPitch = false
 
   fun start() {
     val rot = rotationSensor
@@ -54,26 +57,39 @@ class HeadingSensorMonitor(
       Sensor.TYPE_ROTATION_VECTOR,
       Sensor.TYPE_GAME_ROTATION_VECTOR -> {
         SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
-        emitHeading(computeCameraHeadingDegrees(rotationMatrix))
+        emitPose()
       }
       Sensor.TYPE_ACCELEROMETER -> {
         System.arraycopy(event.values, 0, gravity, 0, minOf(event.values.size, 3))
         hasGravity = true
         if (hasGeomagnetic && SensorManager.getRotationMatrix(rotationMatrix, null, gravity, geomagnetic)) {
-          emitHeading(computeCameraHeadingDegrees(rotationMatrix))
+          emitPose()
         }
       }
       Sensor.TYPE_MAGNETIC_FIELD -> {
         System.arraycopy(event.values, 0, geomagnetic, 0, minOf(event.values.size, 3))
         hasGeomagnetic = true
         if (hasGravity && SensorManager.getRotationMatrix(rotationMatrix, null, gravity, geomagnetic)) {
-          emitHeading(computeCameraHeadingDegrees(rotationMatrix))
+          emitPose()
         }
       }
     }
   }
 
   override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+
+  private fun emitPose() {
+    emitHeading(computeCameraHeadingDegrees(rotationMatrix))
+    val rawPitch = computeCameraPitchDegrees(rotationMatrix)
+    smoothPitch =
+      if (!hasSmoothedPitch) {
+        hasSmoothedPitch = true
+        rawPitch
+      } else {
+        smoothPitch + SMOOTHING_ALPHA * (rawPitch - smoothPitch)
+      }
+    onPitchChanged(smoothPitch)
+  }
 
   private fun emitHeading(rawDegrees: Float) {
     val rad = Math.toRadians(rawDegrees.toDouble())
@@ -117,6 +133,16 @@ class HeadingSensorMonitor(
 
       val deg = Math.toDegrees(atan2(east.toDouble(), north.toDouble())).toFloat()
       return normalizeDegrees(deg)
+    }
+
+    /**
+     * Elevation in degrees of the rear camera's pointing vector (-Z device axis) above the
+     * horizon: +90 looking straight up, -90 looking straight down.
+     */
+    fun computeCameraPitchDegrees(rotationMatrix: FloatArray): Float {
+      if (rotationMatrix.size < 9) return 0f
+      val up = (-rotationMatrix[8]).coerceIn(-1f, 1f)
+      return Math.toDegrees(kotlin.math.asin(up.toDouble())).toFloat()
     }
 
     fun normalizeDegrees(degrees: Float): Float {

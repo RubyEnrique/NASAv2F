@@ -2,16 +2,25 @@ package com.example
 
 import android.content.Context
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ApplicationProvider
+import com.example.gesture.DashboardMode
+import com.example.gesture.DashboardPage
+import com.example.gesture.GestureAction
+import com.example.gesture.HandPose
+import com.example.hud.GameGradientCompass
+import com.example.hud.GestureFeedback
 import com.example.hud.HudUiState
+import com.example.hud.HudViewModel
 import com.example.hud.SpatialHudScreen
-import com.example.hud.SuitTelemetryWidget
-import com.example.hud.VitalsTelemetryWidget
+import com.example.hud.SpatialLayout
+import com.example.mental.EmergencyDrill
 import com.example.ui.theme.SpatialHudTheme
+import com.example.voice.VoiceCommand
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -20,425 +29,199 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
+@Config(sdk = [36], qualifiers = "w800dp-h360dp-land")
 class ExampleRobolectricTest {
 
   @get:Rule val composeTestRule = createComposeRule()
 
+  /** A dashboard state with [page] anchored straight ahead, as the ViewModel would produce. */
+  private fun openOn(page: DashboardPage, base: HudUiState = HudUiState()): HudUiState =
+    base.copy(
+      hasCameraPermission = true,
+      dashboardMode = DashboardMode.PERMANENT,
+      currentPage = page,
+      anchorYawDegrees = SpatialLayout.anchorYawFor(page, base.headingDegrees),
+      anchorPitchDegrees = if (page == DashboardPage.DRILLS) -SpatialLayout.DRILLS_PITCH_OFFSET_DEG else 0f,
+    )
+
+  private fun show(state: HudUiState, onLocation: () -> Unit = {}, onTap: () -> Unit = {}) {
+    composeTestRule.setContent {
+      SpatialHudTheme {
+        SpatialHudScreen(
+          uiState = state,
+          onRequestPermission = {},
+          onRequestLocationPermission = onLocation,
+          onHandsDetected = { _, _ -> },
+          onInvisibleCornerTap = onTap,
+          enableLensEffect = false,
+        )
+      }
+    }
+    composeTestRule.waitForIdle()
+  }
+
   @Test
   fun appName_matchesApp() {
     val context = ApplicationProvider.getApplicationContext<Context>()
-    val appName = context.getString(R.string.app_name)
-    assertEquals("app", appName)
+    assertEquals("app", context.getString(R.string.app_name))
   }
 
   @Test
-  fun invisibleExitZone_triggersFiveTapCallback() {
-    var tapCount = 0
-    composeTestRule.setContent {
-      SpatialHudTheme {
-        SpatialHudScreen(
-          uiState = HudUiState(hasCameraPermission = false, headingDegrees = 245f),
-          onRequestPermission = {},
-          onHandsDetected = { _, _ -> },
-          onInvisibleCornerTap = { tapCount++ },
-        )
-      }
-    }
-
-    val exitNode = composeTestRule.onNodeWithTag("invisible_exit_zone")
-    exitNode.assertIsDisplayed()
-    repeat(5) { exitNode.performClick() }
-    assertEquals(5, tapCount)
-  }
-
-  @Test
-  fun compassAlwaysVisible_showsTimeAndBatteryCapsules() {
-    composeTestRule.setContent {
-      SpatialHudTheme {
-        SpatialHudScreen(
-          uiState =
-            HudUiState(
-              hasCameraPermission = false,
-              headingDegrees = 245f,
-              batteryPercent = 84,
-            ),
-          onRequestPermission = {},
-          onHandsDetected = { _, _ -> },
-          onInvisibleCornerTap = {},
-        )
-      }
-    }
-
-    composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("game_compass").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("compass_time_text").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("compass_battery_text").assertTextEquals("84%")
+  fun invisibleExitZone_andCompass_visibleWithoutCamera() {
+    var taps = 0
+    show(HudUiState(hasCameraPermission = false, batteryPercent = 84), onTap = { taps++ })
     composeTestRule.onNodeWithTag("permission_trigger_area").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("vision_dashboard_panel").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("compass_battery_text").assertTextEquals("84%")
+    repeat(5) { composeTestRule.onNodeWithTag("invisible_exit_zone").performClick() }
+    assertEquals(5, taps)
+    composeTestRule.onNodeWithTag("spatial_tile_isolation").assertDoesNotExist()
   }
 
   @Test
-  fun gameGradientCompass_displays24HrTimeAndLowBatteryLevel() {
-    composeTestRule.setContent {
-      SpatialHudTheme {
-        com.example.hud.GameGradientCompass(
-          headingDegrees = 12f,
-          batteryPercent = 15,
-          timeTextOverride = "14:32",
-        )
-      }
-    }
-
-    composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("game_compass").assertIsDisplayed()
+  fun gameGradientCompass_displays24HrTimeAndLowBattery() {
+    composeTestRule.setContent { SpatialHudTheme { GameGradientCompass(headingDegrees = 12f, batteryPercent = 15, timeTextOverride = "14:32") } }
     composeTestRule.onNodeWithTag("compass_time_text").assertTextEquals("14:32")
     composeTestRule.onNodeWithTag("compass_battery_text").assertTextEquals("15%")
   }
 
   @Test
-  fun vitalsTelemetryWidget_displaysHigherReactiveHeartRate() {
-    composeTestRule.setContent {
-      SpatialHudTheme {
-        VitalsTelemetryWidget()
-      }
-    }
-
-    composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("vitals_hud_widget").assertIsDisplayed()
+  fun ambientHud_showsGlanceStripAndLoadHaloOnly() {
+    val vm = HudViewModel(enablePeriodicDecay = false)
+    show(vm.uiState.value.copy(hasCameraPermission = true))
+    composeTestRule.onNodeWithTag("glance_strip").assertIsDisplayed()
     composeTestRule.onNodeWithTag("vitals_bpm_text").assertTextEquals("86")
-    composeTestRule.onNodeWithTag("vitals_bp_text").assertTextEquals("118/76")
-    composeTestRule.onNodeWithTag("vitals_h2o_text").assertTextEquals("74%")
+    composeTestRule.onNodeWithTag("glance_rad_text").assertTextEquals("11") // shielded at base: 0.4 x 28
+    composeTestRule.onNodeWithTag("glance_load_text").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("load_halo").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("mic_meter").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("spatial_tile_isolation").assertDoesNotExist()
   }
 
   @Test
-  fun suitTelemetryWidget_displaysNormalAndLowPowerStates() {
-    composeTestRule.setContent {
-      SpatialHudTheme {
-        SuitTelemetryWidget(initialBatteryLow = false)
-      }
-    }
-
-    composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("suit_hud_widget").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("suit_pressure_text").assertTextEquals("4.3psi")
-    composeTestRule.onNodeWithTag("suit_rad_text").assertTextEquals("0.24mSv")
-    composeTestRule.onNodeWithTag("suit_eva_text").assertTextEquals("03:42")
-    composeTestRule.onNodeWithTag("suit_pwr_percent_text").assertTextEquals("92%")
+  fun cognitiveHub_isInFront_withGaugeForecastEyesAndMarsClock() {
+    val vm = HudViewModel(enablePeriodicDecay = false)
+    show(openOn(DashboardPage.ISOLATION, vm.uiState.value))
+    composeTestRule.onNodeWithTag("spatial_tile_isolation").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("dashboard_page_mental").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("cognitive_level_pill").assertTextEquals("Nominal")
+    composeTestRule.onNodeWithTag("cognitive_trend_chart").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("cognitive_forecast_text").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("mars_time_text").assertTextContains("Sol ", substring = true)
+    composeTestRule.onNodeWithTag("cognitive_load_text").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("eye_blink_count_text").assertTextEquals("0")
+    composeTestRule.onNodeWithTag("eye_preview_box").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("dashboard_page_indicator").assertIsDisplayed()
   }
 
   @Test
-  fun suitTelemetryWidget_lowBatteryBelow20Percent_shows18Percent() {
-    composeTestRule.setContent {
-      SpatialHudTheme {
-        SuitTelemetryWidget(initialBatteryLow = true)
-      }
-    }
-
-    composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("suit_hud_widget").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("suit_pwr_percent_text").assertTextEquals("18%")
+  fun emergencyDrill_showsAlertBannerBreathingPacerAndEmergencyLevel() {
+    val vm = HudViewModel(enablePeriodicDecay = false)
+    vm.onVoiceCommand(VoiceCommand.RunEmergency(10))
+    show(openOn(DashboardPage.ISOLATION, vm.uiState.value))
+    composeTestRule.onNodeWithTag("cognitive_level_pill").assertTextEquals("Emergency")
+    composeTestRule.onNodeWithTag("alert_banner").assertIsDisplayed().assertTextContains("Emergency", substring = true)
+    composeTestRule.onNodeWithTag("alert_banner").assertTextContains("pulse ${vm.uiState.value.heartRateBpm}", substring = true)
+    composeTestRule.onNodeWithTag("breathing_pacer").assertIsDisplayed()
   }
 
   @Test
-  fun permanentDashboardOpen_displaysMarsMapGpsDistanceRingMetersSpeedAndReactiveVitals() {
-    composeTestRule.setContent {
-      SpatialHudTheme {
-        SpatialHudScreen(
-          uiState =
-            HudUiState(
-              hasCameraPermission = true,
-              headingDegrees = 45f,
-              batteryPercent = 84,
-              distanceMeters = 340f,
-              speedMps = 1.4f,
-              heartRateBpm = 107,
-              dashboardMode = com.example.gesture.DashboardMode.PERMANENT,
-              isTwoFistsReady = true,
-            ),
-          onRequestPermission = {},
-          onHandsDetected = { _, _ -> },
-          onInvisibleCornerTap = {},
-        )
-      }
-    }
-
-    composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("game_compass").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("vitals_hud_widget").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("vitals_bpm_text").assertTextEquals("107")
-    composeTestRule.onNodeWithTag("suit_hud_widget").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("vision_dashboard_panel").assertIsDisplayed()
+  fun environmentTile_showsLiveMapAxemuHabitabilityAndMedaOutside() {
+    val vm = HudViewModel(enablePeriodicDecay = false)
+    vm.onVoiceCommand(VoiceCommand.RunEmergency(4))
+    show(openOn(DashboardPage.ENVIRONMENT, vm.uiState.value.copy(distanceMeters = 1240f, speedMps = 2.1f)))
+    composeTestRule.onNodeWithTag("dashboard_page_environment").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("environment_status_pill").assertTextEquals("Check suit")
+    composeTestRule.onNodeWithTag("suit_helmet_co2_text").assertTextEquals("8.4")
+    composeTestRule.onNodeWithTag("suit_pressure_text").assertTextEquals("4.30")
+    composeTestRule.onNodeWithTag("outside_air_text").assertTextContains("Pa", substring = true)
     composeTestRule.onNodeWithTag("mars_mola_map_canvas").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("dashboard_distance_ring").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("dashboard_distance_text").assertTextEquals("340")
-    composeTestRule.onNodeWithTag("dashboard_distance_unit_text").assertTextEquals("METERS")
-    composeTestRule.onNodeWithTag("dashboard_speed_text").assertTextEquals("1.4 m/s")
-    composeTestRule.onNodeWithTag("two_fists_dual_ring").assertIsDisplayed()
-  }
-
-  @Test
-  fun permanentDashboardOpen_formatsKilometersAboveOneThousandMeters() {
-    composeTestRule.setContent {
-      SpatialHudTheme {
-        SpatialHudScreen(
-          uiState =
-            HudUiState(
-              hasCameraPermission = true,
-              headingDegrees = 90f,
-              batteryPercent = 76,
-              distanceMeters = 1240f,
-              speedMps = 2.1f,
-              heartRateBpm = 115,
-              dashboardMode = com.example.gesture.DashboardMode.QUICK_VOICE,
-            ),
-          onRequestPermission = {},
-          onHandsDetected = { _, _ -> },
-          onInvisibleCornerTap = {},
-        )
-      }
-    }
-
-    composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("dashboard_distance_text").assertTextEquals("1.24")
-    composeTestRule.onNodeWithTag("dashboard_distance_unit_text").assertTextEquals("KM")
     composeTestRule.onNodeWithTag("dashboard_speed_text").assertTextEquals("2.1 m/s")
-    composeTestRule.onNodeWithTag("dashboard_page_indicator").assertIsDisplayed()
   }
 
   @Test
-  fun triDashboard_displaysMapPageAndLocationPermissionPill() {
-    var locationPromptTapped = false
-    composeTestRule.setContent {
-      SpatialHudTheme {
-        SpatialHudScreen(
-          uiState =
-            HudUiState(
-              hasCameraPermission = true,
-              hasLocationPermission = false,
-              dashboardMode = com.example.gesture.DashboardMode.PERMANENT,
-              currentPage = com.example.gesture.DashboardPage.MAP,
-            ),
-          onRequestPermission = {},
-          onRequestLocationPermission = { locationPromptTapped = true },
-          onHandsDetected = { _, _ -> },
-          onInvisibleCornerTap = {},
-        )
-      }
-    }
-
-    composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("dashboard_page_indicator").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("mars_mola_map_canvas").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("location_permission_pill").assertIsDisplayed().performClick()
-    assertEquals(true, locationPromptTapped)
+  fun distanceTile_showsEarthDelayAndTurnBackForecast() {
+    val vm = HudViewModel(enablePeriodicDecay = false)
+    vm.onVoiceCommand(VoiceCommand.RunEmergency(2))
+    show(openOn(DashboardPage.DISTANCE, vm.uiState.value))
+    composeTestRule.onNodeWithTag("dashboard_page_distance").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("earth_delay_text").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("turn_back_text").assertIsDisplayed()
   }
 
   @Test
-  fun triDashboard_rendersInferredVitalsPage() {
-    composeTestRule.setContent {
-      SpatialHudTheme {
-        SpatialHudScreen(
-          uiState =
-            HudUiState(
-              hasCameraPermission = true,
-              hasLocationPermission = true,
-              heartRateBpm = 116,
-              systolicBp = 132,
-              diastolicBp = 81,
-              dashboardMode = com.example.gesture.DashboardMode.PERMANENT,
-              currentPage = com.example.gesture.DashboardPage.VITALS,
-            ),
-          onRequestPermission = {},
-          onHandsDetected = { _, _ -> },
-          onInvisibleCornerTap = {},
-        )
-      }
-    }
-
-    composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("dashboard_page_vitals").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("vitals_status_pill").assertTextEquals("ACTIVE")
+  fun gravityTile_showsActivityRingsAndMarsLoad() {
+    val vm = HudViewModel(enablePeriodicDecay = false)
+    repeat(1000) { vm.onStep() }
+    vm.tick(5_000L)
+    show(openOn(DashboardPage.GRAVITY, vm.uiState.value))
+    composeTestRule.onNodeWithTag("dashboard_page_gravity").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("gravity_rings").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("gravity_load_text").assertTextEquals("380 / 7,500")
+    composeTestRule.onNodeWithTag("spatial_peek_isolation").assertExists()
+    composeTestRule.onNodeWithTag("gesture_ornament").assertIsDisplayed()
   }
 
   @Test
-  fun triDashboard_rendersInferredSuitStatusPageAndLowPowerAlert() {
-    composeTestRule.setContent {
-      SpatialHudTheme {
-        SpatialHudScreen(
-          uiState =
-            HudUiState(
-              hasCameraPermission = true,
-              hasLocationPermission = true,
-              suitPowerPercent = 18,
-              dashboardMode = com.example.gesture.DashboardMode.PERMANENT,
-              currentPage = com.example.gesture.DashboardPage.SUIT_STATUS,
-            ),
-          onRequestPermission = {},
-          onHandsDetected = { _, _ -> },
-          onInvisibleCornerTap = {},
-        )
-      }
-    }
-
-    composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("dashboard_page_suit").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("suit_status_pill").assertTextEquals("LOW POWER")
+  fun donkiParser_readsFlaresAndSeps() {
+    val flr = "[{\"flrID\":\"x\",\"beginTime\":\"2026-11-13T10:00Z\",\"peakTime\":\"2026-11-13T10:12Z\",\"classType\":\"X1.4\"}]"
+    val sep = "[{\"sepID\":\"y\",\"eventTime\":\"2026-11-13T14:00Z\"}]"
+    val events = com.example.nasa.SpaceWeatherForecaster.parse("FLR", flr) + com.example.nasa.SpaceWeatherForecaster.parse("SEP", sep)
+    assertEquals(2, events.size)
+    assertEquals("X1.4", events[0].classType)
+    val now = com.example.nasa.SpaceWeatherForecaster.parseTime("2026-11-14T10:00Z")!!
+    val state = com.example.nasa.SpaceWeatherForecaster.evaluate(events, now, now)
+    assertEquals(com.example.nasa.SpaceWeatherLevel.SEP, state.level)
+    assertEquals(true, (state.sepRiskPercent ?: 0) >= 90)
   }
 
   @Test
-  fun zoomedMarsMap_rendersMolaZoomTiltPill() {
-    composeTestRule.setContent {
-      SpatialHudTheme {
-        SpatialHudScreen(
-          uiState =
-            HudUiState(
-              hasCameraPermission = true,
-              dashboardMode = com.example.gesture.DashboardMode.PERMANENT,
-              currentPage = com.example.gesture.DashboardPage.MAP,
-              mapZoom = 2.5f,
-              mapTiltDegrees = 21f,
-              isMapPinching = true,
-            ),
-          onRequestPermission = {},
-          onHandsDetected = { _, _ -> },
-          onInvisibleCornerTap = {},
-        )
-      }
-    }
-
-    composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("mars_mola_map_canvas").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("mola_zoom_tilt_pill").assertIsDisplayed()
+  fun radiationTile_showsDoseRateAndShelterRoute() {
+    val vm = HudViewModel(enablePeriodicDecay = false)
+    vm.onGpsVectorDelta(120f, 0f)
+    vm.onVoiceCommand(VoiceCommand.RunEmergency(3))
+    show(openOn(DashboardPage.RADIATION, vm.uiState.value))
+    composeTestRule.onNodeWithTag("dashboard_page_radiation").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("radiation_status_pill").assertTextEquals("SPE STORM")
+    composeTestRule.onNodeWithTag("space_weather_text").assertTextEquals("Offline")
+    composeTestRule.onNodeWithTag("motor_steadiness_text").assertTextEquals("Raise a hand")
+    composeTestRule.onNodeWithTag("radiation_base_text").assertTextEquals("120 m · 270°")
+    composeTestRule.onNodeWithTag("base_bearing_arrow").assertIsDisplayed()
   }
 
   @Test
-  fun offlineBundledMolaAssets_existForAllZoomTiers() {
-    val context = ApplicationProvider.getApplicationContext<Context>()
-    val z4 = context.assets.open(com.example.hud.MarsMolaTileCoords.assetPath(4, 6, 22)).use { it.readBytes() }
-    val z5 = context.assets.open(com.example.hud.MarsMolaTileCoords.assetPath(5, 12, 45)).use { it.readBytes() }
-    val z6 = context.assets.open(com.example.hud.MarsMolaTileCoords.assetPath(6, 25, 91)).use { it.readBytes() }
-    assertEquals(true, z4.size > 1000)
-    assertEquals(true, z5.size > 1000)
-    assertEquals(true, z6.size > 1000)
-  }
-
-  @Test
-  fun cognitiveDashboardPage_displaysStressSleepSyncedHrWithoutReadyOrCalibration() {
-    val highStressState =
-      com.example.mental.MentalState(
-        heartRate = 132.0,
-        o2Use = 0.14,
-        helmetCo2MmHg = 2.6,
-        score = 60,
-        band = com.example.mental.MentalBand.CAUTION,
-        label = null,
-        askOk = false,
-        calibrated = true,
-        calibration = 1.0f,
-        needsWorkloadChange = false,
-        expectedHr = 92.0,
-        additionalHr = 40.0,
-        hrPenalty = 30,
-        co2Penalty = 0,
-        scenario = com.example.mental.MentalScenario.BASELINE,
-        stressPercent = 76,
-        stressLevel = com.example.mental.StressLevel.HIGH,
-        stressDriver = "ACUTE STRESS",
-        sleepTracker =
-          com.example.mental.SleepTrackerState(
-            durationHours = 5.8f,
-            qualityPercent = 62,
-            deepMinutes = 74,
-            remMinutes = 68,
-            sleepStatus = "FATIGUED",
-          ),
-      )
-
-    composeTestRule.setContent {
-      SpatialHudTheme {
-        SpatialHudScreen(
-          uiState =
-            HudUiState(
-              hasCameraPermission = true,
-              heartRateBpm = 132,
-              dashboardMode = com.example.gesture.DashboardMode.PERMANENT,
-              currentPage = com.example.gesture.DashboardPage.COGNITIVE,
-              mentalState = highStressState,
-            ),
-          onRequestPermission = {},
-          onHandsDetected = { _, _ -> },
-          onInvisibleCornerTap = {},
-        )
-      }
-    }
-
-    composeTestRule.waitForIdle()
-    composeTestRule.onNodeWithTag("dashboard_page_cognitive").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("cognitive_status_pill").assertTextEquals("HIGH")
-    composeTestRule.onNodeWithTag("cognitive_stress_text").assertTextEquals("76%")
-    composeTestRule.onNodeWithTag("cognitive_stress_driver_text").assertTextEquals("ACUTE STRESS")
-    composeTestRule.onNodeWithTag("cognitive_hr_text").assertTextEquals("132 BPM")
-    composeTestRule.onNodeWithTag("cognitive_sleep_text").assertTextEquals("5.8h")
-    composeTestRule.onNodeWithTag("cognitive_sleep_status_text").assertTextEquals("FATIGUED")
-    composeTestRule.onNodeWithTag("vitals_bpm_text").assertTextEquals("132")
-
-    // Verify READY and CALIBRATION UI elements were cleanly removed
-    composeTestRule.onNodeWithTag("cognitive_score_text").assertDoesNotExist()
-    composeTestRule.onNodeWithTag("cognitive_calibration_bar").assertDoesNotExist()
-    composeTestRule.onNodeWithTag("cognitive_calibration_text").assertDoesNotExist()
-  }
-
-  @Test
-  fun drillsDashboardPage_displaysAllTenEmergenciesAndSensorDropoutState() {
-    val sensorLossMental =
-      com.example.mental.MentalState(
-        heartRate = null,
-        o2Use = 0.09,
-        helmetCo2MmHg = 1.8,
-        score = null,
-        band = com.example.mental.MentalBand.UNKNOWN,
-        label = null,
-        askOk = false,
-        calibrated = true,
-        calibration = 1.0f,
-        needsWorkloadChange = false,
-        expectedHr = null,
-        additionalHr = null,
-        hrPenalty = 0,
-        co2Penalty = 0,
-        scenario = com.example.mental.MentalScenario.BASELINE,
-        stressPercent = 0,
-        stressLevel = com.example.mental.StressLevel.UNKNOWN,
-        stressDriver = "SENSOR LOSS",
-      )
-
-    composeTestRule.setContent {
-      SpatialHudTheme {
-        SpatialHudScreen(
-          uiState =
-            HudUiState(
-              hasCameraPermission = true,
-              isBiometricSensorLost = true,
-              activeDrill = com.example.mental.EmergencyDrill.EMERGENCY_9,
-              dashboardMode = com.example.gesture.DashboardMode.PERMANENT,
-              currentPage = com.example.gesture.DashboardPage.DRILLS,
-              mentalState = sensorLossMental,
-            ),
-          onRequestPermission = {},
-          onHandsDetected = { _, _ -> },
-          onInvisibleCornerTap = {},
-        )
-      }
-    }
-
-    composeTestRule.waitForIdle()
+  fun drillsTile_belowRing_listsAllTenAndSensorDropout() {
+    val vm = HudViewModel(enablePeriodicDecay = false)
+    vm.onVoiceCommand(VoiceCommand.RunEmergency(9))
+    show(openOn(DashboardPage.DRILLS, vm.uiState.value))
     composeTestRule.onNodeWithTag("dashboard_page_drills").assertIsDisplayed()
     composeTestRule.onNodeWithTag("drills_status_pill").assertTextEquals("E-09 ACTIVE")
     composeTestRule.onNodeWithTag("vitals_bpm_text").assertTextEquals("--")
-    composeTestRule.onNodeWithTag("vitals_bp_text").assertTextEquals("--/--")
-    for (num in 1..10) {
-      composeTestRule.onNodeWithTag("drill_item_$num").assertIsDisplayed()
-    }
+    for (n in 1..10) composeTestRule.onNodeWithTag("drill_item_$n").assertIsDisplayed()
+  }
+
+  @Test
+  fun gestureChip_showsPendingHoldAction() {
+    show(
+      HudUiState(
+        hasCameraPermission = true,
+        gesture = GestureFeedback(activePose = HandPose.OPEN_PALM, pendingAction = GestureAction.OPEN_DASHBOARD, holdProgress = 0.5f),
+      )
+    )
+    composeTestRule.onNodeWithTag("gesture_chip").assertIsDisplayed()
+  }
+
+  @Test
+  fun offlineBundledAssets_existForMapTilesAndNewModels() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    listOf(
+        com.example.hud.MarsMolaTileCoords.assetPath(4, 6, 22),
+        com.example.hud.MarsMolaTileCoords.assetPath(6, 25, 91),
+        "face_landmarker.task",
+        "gesture_recognizer.task",
+      )
+      .forEach { path -> assertEquals(path, true, context.assets.open(path).use { it.readBytes().size > 1000 }) }
+    assertEquals(EmergencyDrill.EMERGENCY_3, EmergencyDrill.fromNumber(3))
   }
 }

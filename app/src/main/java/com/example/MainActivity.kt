@@ -24,10 +24,19 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.alert.AlertAnnouncer
 import com.example.hud.HudEvent
 import com.example.hud.HudViewModel
 import com.example.hud.SpatialHudScreen
+import com.example.nasa.DonkiClient
 import com.example.sensor.BatteryStatusMonitor
+import com.example.sensor.BodySensorMonitor
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.example.sensor.GpsDistanceMonitor
 import com.example.sensor.HeadingSensorMonitor
 import com.example.ui.theme.SpatialHudTheme
@@ -40,6 +49,8 @@ class MainActivity : ComponentActivity() {
   private lateinit var batteryStatusMonitor: BatteryStatusMonitor
   private lateinit var gpsDistanceMonitor: GpsDistanceMonitor
   private lateinit var voiceCommandRecognizer: VoiceCommandRecognizer
+  private lateinit var alertAnnouncer: AlertAnnouncer
+  private lateinit var bodySensorMonitor: BodySensorMonitor
 
   private var isPermissionPromptPending = false
   private var hasAttemptedLocationPrompt = false
@@ -77,7 +88,7 @@ class MainActivity : ComponentActivity() {
     configureImmersiveWindow()
     disableBackNavigation()
 
-    headingSensorMonitor = HeadingSensorMonitor(this, viewModel::onHeadingChanged)
+    headingSensorMonitor = HeadingSensorMonitor(this, viewModel::onHeadingChanged, viewModel::onPitchChanged)
     batteryStatusMonitor = BatteryStatusMonitor(this, viewModel::onBatteryPercentChanged)
     gpsDistanceMonitor =
       GpsDistanceMonitor(
@@ -86,7 +97,10 @@ class MainActivity : ComponentActivity() {
         onFixStatusChanged = viewModel::onGpsFixStatusChanged,
         onVectorDelta = viewModel::onGpsVectorDelta,
       )
-    voiceCommandRecognizer = VoiceCommandRecognizer(this, viewModel::onVoiceCommand)
+    voiceCommandRecognizer = VoiceCommandRecognizer(this, viewModel::onVoiceCommand, viewModel::onMicStatus)
+    alertAnnouncer = AlertAnnouncer(this) { speaking -> voiceCommandRecognizer.setMuted(speaking) }
+    bodySensorMonitor = BodySensorMonitor(this, viewModel::onStep, viewModel::onLightLux)
+    startSpaceWeatherSync()
 
     val hasCamera = hasPermission(Manifest.permission.CAMERA)
     val hasLocation = hasLocationPermission()
@@ -119,6 +133,9 @@ class MainActivity : ComponentActivity() {
           viewModel.events.collect { event ->
             when (event) {
               HudEvent.ExitApp -> exitLockedHud()
+              is HudEvent.Speak -> alertAnnouncer.speak(event.text)
+              HudEvent.StopSpeaking -> alertAnnouncer.stop()
+              HudEvent.RecalibrateMic -> voiceCommandRecognizer.recalibrate()
             }
           }
         }
@@ -135,6 +152,8 @@ class MainActivity : ComponentActivity() {
           onRequestLocationPermission = { requestLocationOrOpenSettings() },
           onHandsDetected = viewModel::onHandsDetected,
           onInvisibleCornerTap = { viewModel.onInvisibleExitZoneTap() },
+          onEyeSample = viewModel::onEyeSample,
+          onEyeTrackingStatus = viewModel::onEyeTrackingStatus,
         )
       }
     }
@@ -147,6 +166,7 @@ class MainActivity : ComponentActivity() {
     }
     headingSensorMonitor.start()
     batteryStatusMonitor.start()
+    bodySensorMonitor.start()
 
     val hasCamera = hasPermission(Manifest.permission.CAMERA)
     val hasAudio = hasPermission(Manifest.permission.RECORD_AUDIO)
@@ -164,6 +184,7 @@ class MainActivity : ComponentActivity() {
   override fun onPause() {
     headingSensorMonitor.stop()
     batteryStatusMonitor.stop()
+    bodySensorMonitor.stop()
     gpsDistanceMonitor.stop()
     voiceCommandRecognizer.stop()
     super.onPause()
@@ -284,7 +305,30 @@ class MainActivity : ComponentActivity() {
     }
   }
 
+  /** Pulls NASA DONKI flares / SEPs every 30 min while connectivity exists (DEMO_KEY: 30 req/h). */
+  private fun startSpaceWeatherSync() {
+    val client = DonkiClient(BuildConfig.NASA_API_KEY.ifBlank { "DEMO_KEY" })
+    lifecycleScope.launch {
+      while (isActive) {
+        try {
+          val now = System.currentTimeMillis()
+          val events = withContext(Dispatchers.IO) { client.fetch(now) }
+          viewModel.onSpaceWeatherEvents(events, now)
+        } catch (_: Throwable) {
+          // Offline (expected on an EVA): keep last known state.
+        }
+        delay(30 * 60_000L)
+      }
+    }
+  }
+
+  override fun onDestroy() {
+    alertAnnouncer.shutdown()
+    super.onDestroy()
+  }
+
   private fun exitLockedHud() {
+    alertAnnouncer.stop()
     voiceCommandRecognizer.stop()
     gpsDistanceMonitor.stop()
     try {
