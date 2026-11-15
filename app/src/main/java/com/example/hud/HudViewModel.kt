@@ -3,6 +3,19 @@ package com.example.hud
 import android.os.SystemClock
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.body.BodyMaintenanceState
+import com.example.body.GravityLoadModel
+import com.example.nasa.Mars24
+import com.example.nasa.MarsTime
+import com.example.nasa.PlanetEphemeris
+import com.example.nasa.SpaceWeatherEvent
+import com.example.nasa.SpaceWeatherForecaster
+import com.example.nasa.SpaceWeatherState
+import com.example.predict.TrendForecaster
+import com.example.suit.AxemuProfile
+import com.example.suit.HabitabilityModel
+import com.example.suit.HabitabilityState
+import com.example.suit.JezeroWeatherModel
 import com.example.eye.BlinkAnalyzer
 import com.example.eye.EyeMetrics
 import com.example.eye.EyeSample
@@ -53,6 +66,29 @@ data class GestureFeedback(
   val lastActionId: Long = 0L,
 )
 
+/** Predictive outputs (simple linear trends, see TrendForecaster). */
+data class CognitiveForecast(
+  val projectedIn10Min: Int? = null,
+  val slopePerMin: Double = 0.0,
+  val minutesToCaution: Double? = null,
+  val history: List<Int> = emptyList(),
+)
+
+data class ConsumablesForecast(
+  val oxygenMinutesLeft: Double = 0.0,
+  val batteryMinutesLeft: Double = 0.0,
+  val ratedEvaMinutesLeft: Double = AxemuProfile.RATED_EVA_HOURS * 60.0,
+  val turnBackInMinutes: Double = 0.0,
+  val limitingFactor: String = "O\u2082",
+  val usesObservedTrend: Boolean = false,
+)
+
+data class EarthLinkState(
+  val oneWayDelaySec: Double = 0.0,
+  val distanceAu: Double = 0.0,
+  val solarConjunction: Boolean = false,
+)
+
 data class HudUiState(
   val hasCameraPermission: Boolean = false,
   val hasLocationPermission: Boolean = false,
@@ -91,13 +127,22 @@ data class HudUiState(
   val eyeTrackingStatus: EyeTrackingStatus = EyeTrackingStatus.OFF,
   val eyePreviewEnabled: Boolean = true,
   val alertAcknowledged: Boolean = false,
+  // NASA-derived context and predictions
+  val marsTime: MarsTime? = null,
+  val earthLink: EarthLinkState = EarthLinkState(),
+  val spaceWeather: SpaceWeatherState = SpaceWeatherState(),
+  val cognitiveForecast: CognitiveForecast = CognitiveForecast(),
+  val consumables: ConsumablesForecast = ConsumablesForecast(),
+  val body: BodyMaintenanceState = BodyMaintenanceState(),
+  val habitability: HabitabilityState = HabitabilityState(),
+  val motorSteadiness: Int? = null,
   // Drills
   val activeDrill: EmergencyDrill = EmergencyDrill.NONE,
   // Controls
   val mic: MicStatus = MicStatus(),
   val gesture: GestureFeedback = GestureFeedback(),
   val dashboardMode: DashboardMode = DashboardMode.CLOSED,
-  val currentPage: DashboardPage = DashboardPage.MENTAL,
+  val currentPage: DashboardPage = DashboardPage.HOME,
   val anchorYawDegrees: Float = 0f,
   val anchorPitchDegrees: Float = 0f,
   val lastSwipeDirection: SwipeDirection? = null,
@@ -190,6 +235,20 @@ class HudViewModel(
   private var acknowledgedUntilMs = 0L
   private var lastRadiationStatus = RadiationStatus.NOMINAL
 
+  // Predictive / NASA-context state
+  private val cognitiveTrend = TrendForecaster(windowMs = 5 * 60_000L, minSamples = 10)
+  private val oxygenTrend = TrendForecaster(windowMs = 10 * 60_000L, minSamples = 30)
+  private val batteryTrend = TrendForecaster(windowMs = 10 * 60_000L, minSamples = 30)
+  private val cognitiveHistory = ArrayDeque<Int>()
+  private var spaceWeatherEvents: List<SpaceWeatherEvent> = emptyList()
+  private var spaceWeatherFetchedAtMs = 0L
+  private var steps = 0
+  private var exerciseSeconds = 0f
+  private var lightLux: Float? = null
+  private var coldSoakMinutes = 0.0
+  private val handTrack = ArrayDeque<Pair<Float, Float>>()
+  private var motorSteadinessSmoothed: Double? = null
+
   private fun safeElapsedRealtimeMs(): Long {
     val raw =
       try {
@@ -211,6 +270,7 @@ class HudViewModel(
 
   init {
     _uiState.update { state -> applyTelemetrySnapshot(state, nowMs = 0L, dtSec = 0.0) }
+    _uiState.update { state -> applyPredictions(state, 0L, wallClockMs(), dtSec = 0.0) }
     if (enablePeriodicDecay) {
       viewModelScope.launch {
         while (true) {
@@ -235,7 +295,135 @@ class HudViewModel(
       baseSpo2Percent = if (tickCount % 12 == 6) 99 else 98
     }
     _uiState.update { state -> applyTelemetrySnapshot(state, nowMs, dtSec = 1.0) }
+    _uiState.update { state -> applyPredictions(state, nowMs, wallClockMs(), dtSec = 1.0) }
     evaluateAlerts(nowMs)
+  }
+
+  private fun wallClockMs(): Long = System.currentTimeMillis()
+
+  /**
+   * NASA-context + predictive layer, advanced once per simulated second:
+   *  - Mars24 clock and JPL Earth-Mars light delay (H2 circadian, H3 comms delay)
+   *  - DONKI space-weather SEP risk (H1)
+   *  - cognitive-load 10-min trend forecast (H2)
+   *  - O2 / battery depletion from the observed trend + walk-back ETA -> turn-back time (H3)
+   *  - Mars-gravity loading and exercise minutes (H4); habitability + cold soak (H5)
+   */
+  internal fun applyPredictions(state: HudUiState, nowMs: Long, wallMs: Long, dtSec: Double): HudUiState {
+    val mars = Mars24.compute(wallMs)
+    val outside = JezeroWeatherModel.predict(mars.localTrueSolarTimeHours)
+    val link =
+      EarthLinkState(
+        oneWayDelaySec = PlanetEphemeris.oneWayLightTimeSec(wallMs),
+        distanceAu = PlanetEphemeris.earthMarsDistanceAu(wallMs),
+        solarConjunction = PlanetEphemeris.isNearSolarConjunction(wallMs),
+      )
+
+    // Cognitive forecast
+    cognitiveTrend.add(nowMs, state.cognitive.index.toDouble())
+    if (dtSec > 0 && (tickCount % HISTORY_EVERY_TICKS == 0 || cognitiveHistory.isEmpty())) {
+      cognitiveHistory.addLast(state.cognitive.index)
+      while (cognitiveHistory.size > HISTORY_POINTS) cognitiveHistory.removeFirst()
+    }
+    val cf = cognitiveTrend.forecast(10.0, CognitiveLoadModel.CAUTION_AT.toDouble(), rising = true)
+    val cognitiveForecast =
+      CognitiveForecast(
+        projectedIn10Min = cf?.projected?.roundToInt()?.coerceIn(0, 100),
+        slopePerMin = cf?.slopePerMin ?: 0.0,
+        minutesToCaution = cf?.minutesToThreshold,
+        history = cognitiveHistory.toList(),
+      )
+
+    // Consumables forecast (observed trend when available, model rate otherwise)
+    val suit = state.suit
+    oxygenTrend.add(nowMs, suit.oxyPriStoragePct.toDouble())
+    batteryTrend.add(nowMs, (suit.primaryBatteryPct + suit.secondaryBatteryPct).toDouble())
+    val o2Obs = oxygenTrend.forecast(0.0, OXYGEN_RESERVE_PCT, rising = false)?.minutesToThreshold
+    val batObs = batteryTrend.forecast(0.0, 0.0, rising = false)?.minutesToThreshold
+    val o2Min = o2Obs ?: (suit.oxyTimeLeftSec / 60.0)
+    val batMin = batObs ?: (suit.batteryTimeLeftSec / 60.0)
+    val ratedMin = (AxemuProfile.RATED_EVA_HOURS * 3600.0 - state.evaSeconds).coerceAtLeast(0.0) / 60.0
+    val etaMin = state.radiation.etaToBaseSec / 60.0
+    val limiting = listOf("O\u2082" to o2Min, "Battery" to batMin, "AxEMU 8 h rating" to ratedMin).minBy { it.second }
+    val consumables =
+      ConsumablesForecast(
+        oxygenMinutesLeft = o2Min,
+        batteryMinutesLeft = batMin,
+        ratedEvaMinutesLeft = ratedMin,
+        turnBackInMinutes = limiting.second - etaMin - AxemuProfile.RETURN_RESERVE_MIN,
+        limitingFactor = limiting.first,
+        usesObservedTrend = o2Obs != null || batObs != null,
+      )
+
+    // Gravity / atrophy
+    if (dtSec > 0 && !state.isBiometricSensorLost && state.heartRateBpm >= EXERCISE_HR_BPM) exerciseSeconds += dtSec.toFloat()
+    val body = GravityLoadModel.evaluate(steps, exerciseSeconds)
+
+    // Habitability
+    if (dtSec > 0 && outside.airTempC < AxemuProfile.COLD_SOAK_BELOW_C) coldSoakMinutes += dtSec / 60.0
+    val noise = if (state.mic.calibrating) null else state.mic.noiseFloorDb
+    val habitability =
+      HabitabilityState(
+        suitTempC = suit.suitTempC,
+        suitPressurePsi = suit.suitPressureTotalPsi,
+        helmetCo2MmHg = suit.helmetCo2MmHg,
+        lightLux = lightLux,
+        helmetLightsAdvised = (lightLux ?: 1000f) < AxemuProfile.HELMET_LIGHT_BELOW_LUX || !outside.isDaylight,
+        noiseDbfs = noise,
+        noiseLabel = HabitabilityModel.noiseLabel(noise),
+        distanceFromBaseM = state.radiation.distanceToBaseMeters,
+        outside = outside,
+        coldSoakMinutes = coldSoakMinutes,
+        evaHoursUsedFraction = (state.evaSeconds / (AxemuProfile.RATED_EVA_HOURS * 3600.0)).toFloat().coerceIn(0f, 1f),
+      )
+
+    return state.copy(
+      marsTime = mars,
+      earthLink = link,
+      spaceWeather = SpaceWeatherForecaster.evaluate(spaceWeatherEvents, wallMs, spaceWeatherFetchedAtMs),
+      cognitiveForecast = cognitiveForecast,
+      consumables = consumables,
+      body = body,
+      habitability = habitability,
+    )
+  }
+
+  fun onSpaceWeatherEvents(events: List<SpaceWeatherEvent>, fetchedAtMs: Long) {
+    spaceWeatherEvents = events
+    spaceWeatherFetchedAtMs = fetchedAtMs
+    _uiState.update { it.copy(spaceWeather = SpaceWeatherForecaster.evaluate(events, wallClockMs(), fetchedAtMs)) }
+  }
+
+  fun onStep() {
+    steps++
+  }
+
+  fun onLightLux(lux: Float) {
+    lightLux = lux
+  }
+
+  /** Hand micro-motion (second difference of the palm centre) -> 0..100 steadiness. */
+  private fun updateMotorSteadiness(hands: List<HandObservation>) {
+    val lm = hands.firstOrNull { it.landmarks.size >= 21 }?.landmarks
+    if (lm == null) {
+      handTrack.clear()
+      return
+    }
+    handTrack.addLast(((lm[0].x + lm[9].x) / 2f) to ((lm[0].y + lm[9].y) / 2f))
+    while (handTrack.size > 24) handTrack.removeFirst()
+    if (handTrack.size < 12) return
+    var sum = 0.0
+    for (i in 2 until handTrack.size) {
+      val jx = handTrack[i].first - 2 * handTrack[i - 1].first + handTrack[i - 2].first
+      val jy = handTrack[i].second - 2 * handTrack[i - 1].second + handTrack[i - 2].second
+      sum += (jx * jx + jy * jy).toDouble()
+    }
+    val rms = kotlin.math.sqrt(sum / (handTrack.size - 2))
+    val score = (100.0 - rms * 1000.0 * 6.0).coerceIn(0.0, 100.0)
+    val prev = motorSteadinessSmoothed
+    val next = if (prev == null) score else prev + 0.1 * (score - prev)
+    motorSteadinessSmoothed = next
+    _uiState.update { it.copy(motorSteadiness = next.roundToInt()) }
   }
 
   internal fun stepMentalVitals(nowMs: Long = SystemClock.elapsedRealtime()) {
@@ -572,6 +760,7 @@ class HudViewModel(
     synchronized(gestureLock) {
       val current = _uiState.value
       val update = classifier.process(hands, timestampMs, current.dashboardMode, current.currentPage)
+      updateMotorSteadiness(hands)
 
       update.action?.let { action ->
         when (action) {
@@ -595,7 +784,7 @@ class HudViewModel(
             lastAction = update.action ?: state.gesture.lastAction,
             lastActionId = if (update.action != null) state.gesture.lastActionId + 1 else state.gesture.lastActionId,
           )
-        if (update.mapPinchActive && state.isDashboardOpen && state.currentPage == DashboardPage.MAP) {
+        if (update.mapPinchActive && state.isDashboardOpen && state.currentPage == DashboardPage.ENVIRONMENT) {
           val nextZoom =
             (state.mapZoom + update.mapPinchForwardDelta * 3.2f).coerceIn(MarsMolaTileCoords.MIN_MAP_ZOOM, MarsMolaTileCoords.MAX_MAP_ZOOM)
           val panSensitivity = 16f / nextZoom
@@ -664,15 +853,16 @@ class HudViewModel(
           classifier.reset()
           closeDashboard()
         }
-        VoiceCommand.NAVIGATE_MENTAL -> if (open) selectDashboardPage(DashboardPage.MENTAL)
-        VoiceCommand.NAVIGATE_VITALS -> if (open) selectDashboardPage(DashboardPage.VITALS)
         VoiceCommand.NAVIGATE_RADIATION -> if (open) selectDashboardPage(DashboardPage.RADIATION)
-        VoiceCommand.NAVIGATE_MAP -> if (open) selectDashboardPage(DashboardPage.MAP)
+        VoiceCommand.NAVIGATE_ISOLATION -> if (open) selectDashboardPage(DashboardPage.ISOLATION)
+        VoiceCommand.NAVIGATE_DISTANCE -> if (open) selectDashboardPage(DashboardPage.DISTANCE)
+        VoiceCommand.NAVIGATE_GRAVITY -> if (open) selectDashboardPage(DashboardPage.GRAVITY)
+        VoiceCommand.NAVIGATE_ENVIRONMENT -> if (open) selectDashboardPage(DashboardPage.ENVIRONMENT)
         VoiceCommand.NAVIGATE_DRILLS -> if (open) selectDashboardPage(DashboardPage.DRILLS)
         is VoiceCommand.RunEmergency -> EmergencyDrill.fromNumber(command.number)?.let { setDrill(it) }
-        VoiceCommand.MAP_ZOOM_IN -> if (open && state.currentPage == DashboardPage.MAP) adjustMapZoom(VOICE_ZOOM_STEP)
-        VoiceCommand.MAP_ZOOM_OUT -> if (open && state.currentPage == DashboardPage.MAP) adjustMapZoom(-VOICE_ZOOM_STEP)
-        VoiceCommand.MAP_RECENTER -> if (open && state.currentPage == DashboardPage.MAP) recenterMap()
+        VoiceCommand.MAP_ZOOM_IN -> if (open && state.currentPage == DashboardPage.ENVIRONMENT) adjustMapZoom(VOICE_ZOOM_STEP)
+        VoiceCommand.MAP_ZOOM_OUT -> if (open && state.currentPage == DashboardPage.ENVIRONMENT) adjustMapZoom(-VOICE_ZOOM_STEP)
+        VoiceCommand.MAP_RECENTER -> if (open && state.currentPage == DashboardPage.ENVIRONMENT) recenterMap()
         VoiceCommand.RECENTER_VIEW -> if (open) recenterView()
         VoiceCommand.ACKNOWLEDGE -> acknowledgeAlerts()
         VoiceCommand.TOGGLE_EYE_PREVIEW -> toggleEyePreview()
@@ -701,6 +891,10 @@ class HudViewModel(
     const val EXIT_TAP_WINDOW_MS = 2000L
     const val ALERT_CYCLE_MS = 20_000L
     const val ACK_SNOOZE_MS = 60_000L
+    private const val HISTORY_EVERY_TICKS = 5
+    private const val HISTORY_POINTS = 120
+    private const val OXYGEN_RESERVE_PCT = 5.0
+    private const val EXERCISE_HR_BPM = 105
 
     private val WIND_CYCLE = floatArrayOf(6.4f, 6.5f, 6.4f, 6.3f, 6.4f, 6.6f, 6.5f, 6.4f)
     private const val EYE_PUBLISH_INTERVAL_MS = 250L

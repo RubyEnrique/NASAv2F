@@ -28,7 +28,15 @@ import com.example.alert.AlertAnnouncer
 import com.example.hud.HudEvent
 import com.example.hud.HudViewModel
 import com.example.hud.SpatialHudScreen
+import com.example.nasa.DonkiClient
 import com.example.sensor.BatteryStatusMonitor
+import com.example.sensor.BodySensorMonitor
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.example.sensor.GpsDistanceMonitor
 import com.example.sensor.HeadingSensorMonitor
 import com.example.ui.theme.SpatialHudTheme
@@ -42,6 +50,7 @@ class MainActivity : ComponentActivity() {
   private lateinit var gpsDistanceMonitor: GpsDistanceMonitor
   private lateinit var voiceCommandRecognizer: VoiceCommandRecognizer
   private lateinit var alertAnnouncer: AlertAnnouncer
+  private lateinit var bodySensorMonitor: BodySensorMonitor
 
   private var isPermissionPromptPending = false
   private var hasAttemptedLocationPrompt = false
@@ -90,6 +99,8 @@ class MainActivity : ComponentActivity() {
       )
     voiceCommandRecognizer = VoiceCommandRecognizer(this, viewModel::onVoiceCommand, viewModel::onMicStatus)
     alertAnnouncer = AlertAnnouncer(this) { speaking -> voiceCommandRecognizer.setMuted(speaking) }
+    bodySensorMonitor = BodySensorMonitor(this, viewModel::onStep, viewModel::onLightLux)
+    startSpaceWeatherSync()
 
     val hasCamera = hasPermission(Manifest.permission.CAMERA)
     val hasLocation = hasLocationPermission()
@@ -155,6 +166,7 @@ class MainActivity : ComponentActivity() {
     }
     headingSensorMonitor.start()
     batteryStatusMonitor.start()
+    bodySensorMonitor.start()
 
     val hasCamera = hasPermission(Manifest.permission.CAMERA)
     val hasAudio = hasPermission(Manifest.permission.RECORD_AUDIO)
@@ -172,6 +184,7 @@ class MainActivity : ComponentActivity() {
   override fun onPause() {
     headingSensorMonitor.stop()
     batteryStatusMonitor.stop()
+    bodySensorMonitor.stop()
     gpsDistanceMonitor.stop()
     voiceCommandRecognizer.stop()
     super.onPause()
@@ -289,6 +302,23 @@ class MainActivity : ComponentActivity() {
       startLockTask()
     } catch (_: Throwable) {
       // Screen pinning may be unavailable or already active on some environments.
+    }
+  }
+
+  /** Pulls NASA DONKI flares / SEPs every 30 min while connectivity exists (DEMO_KEY: 30 req/h). */
+  private fun startSpaceWeatherSync() {
+    val client = DonkiClient(BuildConfig.NASA_API_KEY.ifBlank { "DEMO_KEY" })
+    lifecycleScope.launch {
+      while (isActive) {
+        try {
+          val now = System.currentTimeMillis()
+          val events = withContext(Dispatchers.IO) { client.fetch(now) }
+          viewModel.onSpaceWeatherEvents(events, now)
+        } catch (_: Throwable) {
+          // Offline (expected on an EVA): keep last known state.
+        }
+        delay(30 * 60_000L)
+      }
     }
   }
 

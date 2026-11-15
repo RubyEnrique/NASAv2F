@@ -31,6 +31,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
+@org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
 @Config(sdk = [36], qualifiers = "w800dp-h360dp-land")
 class ExampleRobolectricTest {
 
@@ -76,7 +77,7 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("compass_battery_text").assertTextEquals("84%")
     repeat(5) { composeTestRule.onNodeWithTag("invisible_exit_zone").performClick() }
     assertEquals(5, taps)
-    composeTestRule.onNodeWithTag("spatial_tile_mental").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("spatial_tile_isolation").assertDoesNotExist()
   }
 
   @Test
@@ -104,12 +105,15 @@ class ExampleRobolectricTest {
   }
 
   @Test
-  fun mentalTile_isFirstInFront_withLoadGaugeEyeStatsAndPreviewPlaceholder() {
+  fun cognitiveHub_isInFront_withGaugeForecastEyesAndMarsClock() {
     val vm = HudViewModel(enablePeriodicDecay = false)
-    show(openOn(DashboardPage.MENTAL, vm.uiState.value))
-    composeTestRule.onNodeWithTag("spatial_tile_mental").assertIsDisplayed()
+    show(openOn(DashboardPage.ISOLATION, vm.uiState.value))
+    composeTestRule.onNodeWithTag("spatial_tile_isolation").assertIsDisplayed()
     composeTestRule.onNodeWithTag("dashboard_page_mental").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("cognitive_level_pill").assertTextEquals("NOMINAL")
+    composeTestRule.onNodeWithTag("cognitive_level_pill").assertTextEquals("Nominal")
+    composeTestRule.onNodeWithTag("cognitive_trend_chart").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("cognitive_forecast_text").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("mars_time_text").assertTextContains("Sol ", substring = true)
     composeTestRule.onNodeWithTag("cognitive_load_text").assertIsDisplayed()
     composeTestRule.onNodeWithTag("eye_blink_count_text").assertTextEquals("0")
     composeTestRule.onNodeWithTag("eye_preview_box").assertIsDisplayed()
@@ -120,22 +124,60 @@ class ExampleRobolectricTest {
   fun emergencyDrill_showsAlertBannerBreathingPacerAndEmergencyLevel() {
     val vm = HudViewModel(enablePeriodicDecay = false)
     vm.onVoiceCommand(VoiceCommand.RunEmergency(10))
-    show(openOn(DashboardPage.MENTAL, vm.uiState.value))
-    composeTestRule.onNodeWithTag("cognitive_level_pill").assertTextEquals("EMERGENCY")
-    composeTestRule.onNodeWithTag("alert_banner").assertIsDisplayed().assertTextContains("EMERGENCY", substring = true)
-    composeTestRule.onNodeWithTag("alert_banner").assertTextContains("PULSE ${vm.uiState.value.heartRateBpm}", substring = true)
+    show(openOn(DashboardPage.ISOLATION, vm.uiState.value))
+    composeTestRule.onNodeWithTag("cognitive_level_pill").assertTextEquals("Emergency")
+    composeTestRule.onNodeWithTag("alert_banner").assertIsDisplayed().assertTextContains("Emergency", substring = true)
+    composeTestRule.onNodeWithTag("alert_banner").assertTextContains("pulse ${vm.uiState.value.heartRateBpm}", substring = true)
     composeTestRule.onNodeWithTag("breathing_pacer").assertIsDisplayed()
   }
 
   @Test
-  fun vitalsTile_showsCrewBiomedAndEmuTelemetry() {
+  fun environmentTile_showsLiveMapAxemuHabitabilityAndMedaOutside() {
     val vm = HudViewModel(enablePeriodicDecay = false)
     vm.onVoiceCommand(VoiceCommand.RunEmergency(4))
-    show(openOn(DashboardPage.VITALS, vm.uiState.value))
-    composeTestRule.onNodeWithTag("dashboard_page_vitals").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("vitals_status_pill").assertTextEquals("CO₂ CRITICAL")
+    show(openOn(DashboardPage.ENVIRONMENT, vm.uiState.value.copy(distanceMeters = 1240f, speedMps = 2.1f)))
+    composeTestRule.onNodeWithTag("dashboard_page_environment").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("environment_status_pill").assertTextEquals("Check suit")
     composeTestRule.onNodeWithTag("suit_helmet_co2_text").assertTextEquals("8.4 mmHg")
-    composeTestRule.onNodeWithTag("suit_pressure_text").assertTextContains("4.30 psi", substring = true)
+    composeTestRule.onNodeWithTag("suit_pressure_text").assertTextEquals("4.30 psi")
+    composeTestRule.onNodeWithTag("outside_air_text").assertTextContains("Pa", substring = true)
+    composeTestRule.onNodeWithTag("mars_mola_map_canvas").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("dashboard_distance_text").assertTextEquals("1.24")
+    composeTestRule.onNodeWithTag("dashboard_speed_text").assertTextEquals("2.1 m/s")
+  }
+
+  @Test
+  fun distanceTile_showsEarthDelayAndTurnBackForecast() {
+    val vm = HudViewModel(enablePeriodicDecay = false)
+    vm.onVoiceCommand(VoiceCommand.RunEmergency(2))
+    show(openOn(DashboardPage.DISTANCE, vm.uiState.value))
+    composeTestRule.onNodeWithTag("dashboard_page_distance").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("earth_delay_text").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("turn_back_text").assertIsDisplayed()
+  }
+
+  @Test
+  fun gravityTile_showsActivityRingsAndMarsLoad() {
+    val vm = HudViewModel(enablePeriodicDecay = false)
+    repeat(1000) { vm.onStep() }
+    vm.tick(5_000L)
+    show(openOn(DashboardPage.GRAVITY, vm.uiState.value))
+    composeTestRule.onNodeWithTag("dashboard_page_gravity").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("gravity_rings").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("gravity_load_text").assertTextEquals("380 / 7,500")
+  }
+
+  @Test
+  fun donkiParser_readsFlaresAndSeps() {
+    val flr = "[{\"flrID\":\"x\",\"beginTime\":\"2026-11-13T10:00Z\",\"peakTime\":\"2026-11-13T10:12Z\",\"classType\":\"X1.4\"}]"
+    val sep = "[{\"sepID\":\"y\",\"eventTime\":\"2026-11-13T14:00Z\"}]"
+    val events = com.example.nasa.SpaceWeatherForecaster.parse("FLR", flr) + com.example.nasa.SpaceWeatherForecaster.parse("SEP", sep)
+    assertEquals(2, events.size)
+    assertEquals("X1.4", events[0].classType)
+    val now = com.example.nasa.SpaceWeatherForecaster.parseTime("2026-11-14T10:00Z")!!
+    val state = com.example.nasa.SpaceWeatherForecaster.evaluate(events, now, now)
+    assertEquals(com.example.nasa.SpaceWeatherLevel.SEP, state.level)
+    assertEquals(true, (state.sepRiskPercent ?: 0) >= 90)
   }
 
   @Test
@@ -146,23 +188,10 @@ class ExampleRobolectricTest {
     show(openOn(DashboardPage.RADIATION, vm.uiState.value))
     composeTestRule.onNodeWithTag("dashboard_page_radiation").assertIsDisplayed()
     composeTestRule.onNodeWithTag("radiation_status_pill").assertTextEquals("SPE STORM")
+    composeTestRule.onNodeWithTag("space_weather_text").assertTextEquals("Offline")
+    composeTestRule.onNodeWithTag("motor_steadiness_text").assertTextEquals("Raise a hand")
     composeTestRule.onNodeWithTag("radiation_base_text").assertTextEquals("120 m · 270°")
     composeTestRule.onNodeWithTag("base_bearing_arrow").assertIsDisplayed()
-  }
-
-  @Test
-  fun mapTile_showsDistanceSpeedAndLocationPrompt() {
-    var tapped = false
-    show(
-      openOn(DashboardPage.MAP, HudUiState(distanceMeters = 1240f, speedMps = 2.1f, hasLocationPermission = false)),
-      onLocation = { tapped = true },
-    )
-    composeTestRule.onNodeWithTag("mars_mola_map_canvas").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("dashboard_distance_text").assertTextEquals("1.24")
-    composeTestRule.onNodeWithTag("dashboard_distance_unit_text").assertTextEquals("KM")
-    composeTestRule.onNodeWithTag("dashboard_speed_text").assertTextEquals("2.1 m/s")
-    composeTestRule.onNodeWithTag("location_permission_pill").performClick()
-    assertEquals(true, tapped)
   }
 
   @Test

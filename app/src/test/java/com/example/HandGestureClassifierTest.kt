@@ -125,7 +125,7 @@ class HandGestureClassifierTest {
   fun swipe_movesAroundTheRingAndWrapsFromMapBackToMental() {
     val vm = HudViewModel(enablePeriodicDecay = false)
     vm.onVoiceCommand(VoiceCommand.OPEN_PERMANENT)
-    assertEquals(DashboardPage.MENTAL, vm.uiState.value.currentPage)
+    assertEquals("opens on the cognitive hub", DashboardPage.ISOLATION, vm.uiState.value.currentPage)
 
     var t = 1000L
     fun swipe(fromX: Float, toX: Float) {
@@ -135,31 +135,31 @@ class HandGestureClassifierTest {
       t += 800L
     }
     swipe(-0.08f, 0.08f)
-    assertEquals(DashboardPage.VITALS, vm.uiState.value.currentPage)
+    assertEquals(DashboardPage.DISTANCE, vm.uiState.value.currentPage)
     assertEquals(SwipeDirection.NEXT, vm.uiState.value.lastSwipeDirection)
     swipe(-0.08f, 0.08f)
-    assertEquals(DashboardPage.RADIATION, vm.uiState.value.currentPage)
+    assertEquals(DashboardPage.GRAVITY, vm.uiState.value.currentPage)
     swipe(-0.08f, 0.08f)
-    assertEquals(DashboardPage.MAP, vm.uiState.value.currentPage)
+    assertEquals(DashboardPage.ENVIRONMENT, vm.uiState.value.currentPage)
     swipe(-0.08f, 0.08f)
-    assertEquals("Ring wraps visualisation -> mental", DashboardPage.MENTAL, vm.uiState.value.currentPage)
+    assertEquals("Ring wraps hazard 5 -> hazard 1", DashboardPage.RADIATION, vm.uiState.value.currentPage)
     swipe(0.08f, -0.08f)
-    assertEquals(DashboardPage.MAP, vm.uiState.value.currentPage)
-    assertEquals(4L + 1L, vm.uiState.value.swipeCueId)
+    assertEquals(DashboardPage.ENVIRONMENT, vm.uiState.value.currentPage)
+    assertEquals(5L, vm.uiState.value.swipeCueId)
   }
 
   @Test
   fun mapPinch_zoomsTiltsAndPans_onlyOnMapTile() {
     val vm = HudViewModel(enablePeriodicDecay = false)
     vm.onVoiceCommand(VoiceCommand.OPEN_PERMANENT)
-    vm.onVoiceCommand(VoiceCommand.NAVIGATE_MAP)
+    vm.onVoiceCommand(VoiceCommand.NAVIGATE_ENVIRONMENT)
     vm.onHandsDetected(listOf(obs(pinchedHand())), 1000L)
     assertTrue(vm.uiState.value.isMapPinching)
     vm.onHandsDetected(listOf(obs(pinchedHand(dx = 0.10f, dy = -0.05f, scale = 1.24f, z = -0.06f))), 1120L)
     assertTrue(vm.uiState.value.mapZoom > 1.5f)
     assertTrue(vm.uiState.value.mapTiltDegrees > 8f)
     assertTrue(vm.uiState.value.mapPanEastDeg > 0.1f)
-    assertEquals(DashboardPage.MAP, vm.uiState.value.currentPage)
+    assertEquals(DashboardPage.ENVIRONMENT, vm.uiState.value.currentPage)
   }
 
   // ------------------------------------------------------------ Head-locked spatial layout
@@ -167,10 +167,11 @@ class HandGestureClassifierTest {
   @Test
   fun spatialLayout_focusFollowsHeadTurnAndLookingDownShowsDrills() {
     val anchor = 100f
-    assertEquals(DashboardPage.MENTAL, SpatialLayout.focusedPage(100f, 0f, anchor, 0f))
-    assertEquals(DashboardPage.VITALS, SpatialLayout.focusedPage(141f, 0f, anchor, 0f))
-    assertEquals(DashboardPage.RADIATION, SpatialLayout.focusedPage(178f, 0f, anchor, 0f))
-    assertEquals(DashboardPage.MAP, SpatialLayout.focusedPage(222f, 0f, anchor, 0f))
+    assertEquals(DashboardPage.RADIATION, SpatialLayout.focusedPage(100f, 0f, anchor, 0f))
+    assertEquals(DashboardPage.ISOLATION, SpatialLayout.focusedPage(141f, 0f, anchor, 0f))
+    assertEquals(DashboardPage.DISTANCE, SpatialLayout.focusedPage(178f, 0f, anchor, 0f))
+    assertEquals(DashboardPage.GRAVITY, SpatialLayout.focusedPage(222f, 0f, anchor, 0f))
+    assertEquals(DashboardPage.ENVIRONMENT, SpatialLayout.focusedPage(262f, 0f, anchor, 0f))
     assertEquals(DashboardPage.DRILLS, SpatialLayout.focusedPage(150f, -30f, anchor, 0f))
     assertEquals(-20f, SpatialLayout.angleDelta(350f, 10f), 0.01f)
 
@@ -184,13 +185,13 @@ class HandGestureClassifierTest {
     val vm = HudViewModel(enablePeriodicDecay = false)
     vm.onHeadingChanged(200f)
     vm.onVoiceCommand(VoiceCommand.OPEN_PERMANENT)
-    vm.onHeadingChanged(281f) // turn head ~2 tiles to the right
-    assertEquals(DashboardPage.RADIATION, vm.uiState.value.currentPage)
+    vm.onHeadingChanged(281f) // opened on H2 at 200; turn ~2 tiles right -> H4
+    assertEquals(DashboardPage.GRAVITY, vm.uiState.value.currentPage)
     vm.onPitchChanged(-30f)
     assertEquals(DashboardPage.DRILLS, vm.uiState.value.currentPage)
     vm.onPitchChanged(0f)
     for (t in 0L..520L step 40L) vm.onHandsDetected(listOf(obs(closedFist(), HandPose.POINTING_UP)), t)
-    assertEquals(281f - 2 * SpatialLayout.TILE_SPACING_DEG, vm.uiState.value.anchorYawDegrees, 0.01f)
+    assertEquals(281f - 3 * SpatialLayout.TILE_SPACING_DEG, vm.uiState.value.anchorYawDegrees, 0.01f)
   }
 
   @Test
@@ -211,11 +212,13 @@ class HandGestureClassifierTest {
     assertEquals(VoiceCommand.TOGGLE_QUICK, p("Dashboard"))
     assertEquals(VoiceCommand.OPEN_PERMANENT, p("dashboard-open"))
     assertEquals(VoiceCommand.CLOSE_PERMANENT, p("close dashboard"))
-    assertEquals(VoiceCommand.NAVIGATE_MENTAL, p("mental health"))
-    assertEquals(VoiceCommand.NAVIGATE_MENTAL, p("cognitive"))
-    assertEquals(VoiceCommand.NAVIGATE_VITALS, p("suit status"))
+    assertEquals(VoiceCommand.NAVIGATE_ISOLATION, p("mental health"))
+    assertEquals(VoiceCommand.NAVIGATE_ISOLATION, p("cognitive"))
+    assertEquals(VoiceCommand.NAVIGATE_DISTANCE, p("earth"))
+    assertEquals(VoiceCommand.NAVIGATE_GRAVITY, p("exercise"))
+    assertEquals(VoiceCommand.NAVIGATE_ENVIRONMENT, p("suit status"))
     assertEquals(VoiceCommand.NAVIGATE_RADIATION, p("radiation"))
-    assertEquals(VoiceCommand.NAVIGATE_MAP, p("map"))
+    assertEquals(VoiceCommand.NAVIGATE_ENVIRONMENT, p("map"))
     assertEquals(VoiceCommand.NAVIGATE_DRILLS, p("drills"))
     assertEquals(VoiceCommand.RECENTER_VIEW, p("recenter"))
     assertEquals(VoiceCommand.MAP_RECENTER, p("center map"))
@@ -236,12 +239,14 @@ class HandGestureClassifierTest {
   @Test
   fun voiceNavigation_bringsRequestedTileInFront() {
     val vm = HudViewModel(enablePeriodicDecay = false)
-    vm.onVoiceCommand(VoiceCommand.NAVIGATE_VITALS)
-    assertEquals("ignored while closed", DashboardPage.MENTAL, vm.uiState.value.currentPage)
+    vm.onVoiceCommand(VoiceCommand.NAVIGATE_GRAVITY)
+    assertEquals("ignored while closed", DashboardPage.ISOLATION, vm.uiState.value.currentPage)
     vm.onVoiceCommand(VoiceCommand.TOGGLE_QUICK)
     assertEquals(DashboardMode.QUICK_VOICE, vm.uiState.value.dashboardMode)
     vm.onVoiceCommand(VoiceCommand.NAVIGATE_RADIATION)
     assertEquals(DashboardPage.RADIATION, vm.uiState.value.currentPage)
+    assertEquals(0f, vm.uiState.value.anchorYawDegrees, 0.01f)
+    vm.onVoiceCommand(VoiceCommand.NAVIGATE_DISTANCE)
     assertEquals(-2 * SpatialLayout.TILE_SPACING_DEG, vm.uiState.value.anchorYawDegrees, 0.01f)
     vm.onVoiceCommand(VoiceCommand.NAVIGATE_DRILLS)
     assertEquals(DashboardPage.DRILLS, vm.uiState.value.currentPage)

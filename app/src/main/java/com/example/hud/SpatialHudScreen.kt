@@ -130,7 +130,7 @@ fun SpatialHudScreen(
   var eyePreview by remember { mutableStateOf<ImageBitmap?>(null) }
   var eyeOverlay by remember { mutableStateOf<EyeOverlay?>(null) }
   val previewWanted =
-    uiState.isDashboardOpen && uiState.currentPage == DashboardPage.MENTAL && uiState.eyePreviewEnabled
+    uiState.isDashboardOpen && uiState.currentPage == DashboardPage.ISOLATION && uiState.eyePreviewEnabled
 
   Box(modifier = modifier.fillMaxSize().background(ObsidianBlack)) {
     if (uiState.hasCameraPermission) {
@@ -412,10 +412,14 @@ private fun SpatialDashboard(
     val wPx = constraints.maxWidth.toFloat()
     val hPx = constraints.maxHeight.toFloat()
     val pxPerDeg = wPx / SpatialLayout.VIEW_HFOV_DEG
-    val tileW = minOf(maxWidth * 0.56f, 400.dp)
-    val tileH = minOf(maxHeight * 0.66f, 250.dp)
-    val tileWPx = with(density) { tileW.toPx() }
-    val tileHPx = with(density) { tileH.toPx() }
+    // Keep tiles clear of the compass + alert capsule above and the control chips below.
+    val topReserve = 92.dp
+    val bottomReserve = 30.dp
+    val usableH = (maxHeight - topReserve - bottomReserve).coerceAtLeast(160.dp)
+    val centerYPx = with(density) { (topReserve + usableH / 2).toPx() }
+    fun tileSize(page: DashboardPage) =
+      if (page == DashboardPage.ISOLATION || page == DashboardPage.ENVIRONMENT) minOf(maxWidth * 0.66f, 500.dp) to minOf(usableH, 280.dp)
+      else minOf(maxWidth * 0.58f, 430.dp) to minOf(usableH, 270.dp)
 
     val pages = DashboardPage.ring + DashboardPage.DRILLS
     // Draw farthest first so the focused tile sits on top.
@@ -431,11 +435,14 @@ private fun SpatialDashboard(
     for ((page, proj) in ordered) {
       if (!proj.visible) continue
       val focused = page == uiState.currentPage
+      val (tileW, tileH) = tileSize(page)
+      val tileWPx = with(density) { tileW.toPx() }
+      val tileHPx = with(density) { tileH.toPx() }
       val accent =
         when {
-          page == DashboardPage.MENTAL && uiState.cognitive.level != CognitiveLevel.NOMINAL -> levelColor(uiState.cognitive.level)
-          page == DashboardPage.RADIATION && uiState.radiation.status == RadiationStatus.STORM -> IosSfRed
-          focused -> IosSfBlue
+          page == DashboardPage.ISOLATION && uiState.cognitive.level != CognitiveLevel.NOMINAL -> levelColor(uiState.cognitive.level)
+          page == DashboardPage.RADIATION && uiState.radiation.status == RadiationStatus.STORM -> Ios.Red
+          focused -> Color.White.copy(alpha = 0.32f)
           else -> null
         }
       GlassPanel(
@@ -444,7 +451,7 @@ private fun SpatialDashboard(
           Modifier.offset {
               IntOffset(
                 (wPx / 2f + proj.xDeg * pxPerDeg - tileWPx / 2f).roundToInt(),
-                (hPx / 2f - proj.yDeg * pxPerDeg - tileHPx / 2f).roundToInt(),
+                (centerYPx - proj.yDeg * pxPerDeg - tileHPx / 2f).roundToInt(),
               )
             }
             .size(tileW, tileH)
@@ -460,16 +467,17 @@ private fun SpatialDashboard(
             },
       ) {
         when (page) {
-          DashboardPage.MENTAL -> MentalTile(uiState, eyePreview, eyeOverlay)
-          DashboardPage.VITALS -> VitalsTile(uiState)
           DashboardPage.RADIATION -> RadiationTile(uiState)
-          DashboardPage.MAP -> MapTile(uiState, onRequestLocationPermission)
+          DashboardPage.ISOLATION -> IsolationTile(uiState, eyePreview, eyeOverlay)
+          DashboardPage.DISTANCE -> DistanceTile(uiState)
+          DashboardPage.GRAVITY -> GravityTile(uiState)
+          DashboardPage.ENVIRONMENT -> EnvironmentTile(uiState, onRequestLocationPermission)
           DashboardPage.DRILLS -> DrillsTile(uiState.activeDrill)
         }
       }
     }
 
-    RingIndicator(uiState.currentPage, Modifier.align(Alignment.BottomCenter).padding(bottom = 58.dp).testTag("dashboard_page_indicator"))
+    RingIndicator(uiState.currentPage, Modifier.align(Alignment.BottomCenter).padding(bottom = 36.dp).testTag("dashboard_page_indicator"))
 
     if (cue.value > 0.01f && uiState.lastSwipeDirection != null) {
       val left = uiState.lastSwipeDirection == SwipeDirection.PREVIOUS
@@ -495,15 +503,11 @@ private fun RingIndicator(current: DashboardPage, modifier: Modifier) {
   Row(modifier, horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
     DashboardPage.ring.forEach { page ->
       val selected = page == current
-      val w by animateFloatAsState(if (selected) 18f else 6f, tween(200), label = "ring_dot_${page.name}")
-      Box(Modifier.size(w.dp, 6.dp).clip(CircleShape).background(SpecularWhite.copy(alpha = if (selected) 0.94f else 0.32f)))
+      val w by animateFloatAsState(if (selected) 20f else 7f, tween(200), label = "ring_dot_${page.name}")
+      Box(Modifier.size(w.dp, 7.dp).clip(CircleShape).background(if (selected) hazardColor(page) else Color.White.copy(alpha = 0.3f)))
     }
-    Text("↺", style = hudText(9.sp, IosLabelSecondary))
-    Box(
-      Modifier.size(6.dp)
-        .clip(CircleShape)
-        .background(if (current == DashboardPage.DRILLS) IosSfAmber else SpecularWhite.copy(alpha = 0.18f))
-    )
+    Text("↺", style = hudText(9.sp, Ios.Secondary))
+    Box(Modifier.size(7.dp).clip(CircleShape).background(if (current == DashboardPage.DRILLS) Ios.Red else Color.White.copy(alpha = 0.18f)))
   }
 }
 
@@ -516,12 +520,12 @@ private fun AlertBanner(uiState: HudUiState) {
   val (text, color) =
     when {
       cog.level == CognitiveLevel.EMERGENCY ->
-        "EMERGENCY · LOAD ${cog.index} · PULSE ${if (uiState.isBiometricSensorLost) "--" else uiState.heartRateBpm} · " +
-          (if (uiState.alertAcknowledged) "ACKNOWLEDGED" else "THUMB UP TO ACK") to IosSfRed
-      cog.level == CognitiveLevel.WARNING -> "WARNING · LOAD ${cog.index} · ${cog.topDriver}" to levelColor(cog.level)
-      rad.status == RadiationStatus.STORM -> "SOLAR PARTICLE EVENT · SEEK SHELTER" to IosSfRed
-      cog.level == CognitiveLevel.CAUTION -> "CAUTION · LOAD ${cog.index} · ${cog.topDriver}" to IosSfAmber
-      uiState.activeDrill != EmergencyDrill.NONE -> "DRILL ${uiState.activeDrill.code} · ${uiState.activeDrill.title.uppercase()}" to IosSfAmber
+        "Emergency · load ${cog.index} · pulse ${if (uiState.isBiometricSensorLost) "--" else uiState.heartRateBpm} · " +
+          (if (uiState.alertAcknowledged) "acknowledged" else "thumbs up to acknowledge") to Ios.Red
+      cog.level == CognitiveLevel.WARNING -> "Warning · load ${cog.index} · ${cog.topDriver.lowercase()}" to levelColor(cog.level)
+      rad.status == RadiationStatus.STORM -> "Solar particle event · seek shelter" to Ios.Red
+      cog.level == CognitiveLevel.CAUTION -> "Caution · load ${cog.index} · ${cog.topDriver.lowercase()}" to Ios.Yellow
+      uiState.activeDrill != EmergencyDrill.NONE -> "Drill ${uiState.activeDrill.code} · ${uiState.activeDrill.title}" to Ios.Orange
       else -> null to IosSfGreen
     }
   if (text == null) return
@@ -530,16 +534,19 @@ private fun AlertBanner(uiState: HudUiState) {
       .animateFloat(0.55f, 1f, infiniteRepeatable(tween(520), RepeatMode.Reverse), label = "alert_pulse_a")
   val emergency = cog.level == CognitiveLevel.EMERGENCY && !uiState.alertAcknowledged
   val shape = RoundedCornerShape(50)
-  Box(
+  Row(
     Modifier.padding(top = 4.dp)
       .testTag("alert_banner")
       .semantics(mergeDescendants = true) {}
       .clip(shape)
-      .background(color.copy(alpha = if (emergency) 0.34f * pulse else 0.20f))
-      .border(1.dp, color.copy(alpha = if (emergency) pulse else 0.7f), shape)
-      .padding(horizontal = 14.dp, vertical = 4.dp)
+      .background(Color.Black)
+      .border(if (emergency) 1.5.dp else 0.5.dp, color.copy(alpha = if (emergency) pulse else 0.5f), shape)
+      .padding(horizontal = 14.dp, vertical = 6.dp),
+    verticalAlignment = Alignment.CenterVertically,
   ) {
-    Text(text, style = hudText(10.sp, if (emergency) IosLabelPrimary else color), maxLines = 1)
+    Dot(color.copy(alpha = if (emergency) pulse else 1f), 8.dp)
+    Spacer(Modifier.width(8.dp))
+    Text(text, style = hudText(11.sp, Color.White), maxLines = 1)
   }
 }
 
@@ -561,8 +568,7 @@ private fun GestureChip(uiState: HudUiState) {
   Row(
     Modifier.testTag("gesture_chip")
       .clip(shape)
-      .background(ObsidianBlack.copy(alpha = 0.45f))
-      .border(0.7.dp, SpecularWhite.copy(alpha = 0.30f), shape)
+      .background(Color.Black.copy(alpha = 0.85f))
       .padding(horizontal = 10.dp, vertical = 4.dp),
     verticalAlignment = Alignment.CenterVertically,
   ) {
@@ -591,7 +597,7 @@ private fun MicMeter(uiState: HudUiState) {
   val mic = uiState.mic
   val norm = { db: Float -> ((db + 80f) / 70f).coerceIn(0f, 1f) }
   Row(Modifier.testTag("mic_meter"), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-    Text(if (mic.calibrating) "MIC CAL" else "MIC S${mic.sensitivity}", style = hudText(7.sp, IosLabelSecondary, FontWeight.Medium))
+    Text(if (mic.calibrating) "Calibrating mic" else "Mic · S${mic.sensitivity}", style = hudText(7.sp, IosLabelSecondary, FontWeight.Medium))
     Box(Modifier.width(70.dp).height(4.dp).clip(CircleShape).background(SpecularWhite.copy(alpha = 0.14f))) {
       Box(
         Modifier.fillMaxWidth(norm(mic.levelDb).coerceAtLeast(0.02f))

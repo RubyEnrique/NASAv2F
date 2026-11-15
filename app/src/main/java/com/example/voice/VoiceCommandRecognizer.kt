@@ -27,10 +27,11 @@ sealed interface VoiceCommand {
   data object TOGGLE_QUICK : VoiceCommand
   data object OPEN_PERMANENT : VoiceCommand
   data object CLOSE_PERMANENT : VoiceCommand
-  data object NAVIGATE_MENTAL : VoiceCommand
-  data object NAVIGATE_VITALS : VoiceCommand
   data object NAVIGATE_RADIATION : VoiceCommand
-  data object NAVIGATE_MAP : VoiceCommand
+  data object NAVIGATE_ISOLATION : VoiceCommand
+  data object NAVIGATE_DISTANCE : VoiceCommand
+  data object NAVIGATE_GRAVITY : VoiceCommand
+  data object NAVIGATE_ENVIRONMENT : VoiceCommand
   data object NAVIGATE_DRILLS : VoiceCommand
   data object MAP_ZOOM_IN : VoiceCommand
   data object MAP_ZOOM_OUT : VoiceCommand
@@ -476,8 +477,9 @@ class VoiceCommandRecognizer(
     private val GRAMMAR_PHRASES =
       listOf(
         "dashboard", "dashboard open", "dashboard close", "open dashboard", "close dashboard",
-        "mental", "mental health", "cognitive", "readiness", "vitals", "suit", "suit status",
-        "radiation", "shield", "shelter", "map", "meter", "drills", "drill", "emergencies",
+        "mental", "mental health", "cognitive", "readiness", "isolation", "sleep", "vitals",
+        "distance", "earth", "comms", "gravity", "exercise", "fitness", "environment", "suit",
+        "suit status", "radiation", "shield", "shelter", "map", "meter", "drills", "drill", "emergencies",
         "emergency zero", "emergency one", "emergency two", "emergency three", "emergency four",
         "emergency five", "emergency six", "emergency seven", "emergency eight", "emergency nine",
         "emergency ten", "clear drill", "stop drill", "reset drills", "zoom in", "zoom out",
@@ -545,10 +547,11 @@ class VoiceCommandRecognizer(
         has("recenter|recenter view") -> VoiceCommand.RECENTER_VIEW
         has("acknowledge|copy|silence") -> VoiceCommand.ACKNOWLEDGE
         has("eyes|eye preview|show eyes|hide eyes") -> VoiceCommand.TOGGLE_EYE_PREVIEW
-        has("mental|mental health|cognitive|readiness") -> VoiceCommand.NAVIGATE_MENTAL
-        has("vitals|suit|suit status") -> VoiceCommand.NAVIGATE_VITALS
         has("radiation|shield|shelter") -> VoiceCommand.NAVIGATE_RADIATION
-        has("map|meter") -> VoiceCommand.NAVIGATE_MAP
+        has("mental|mental health|cognitive|readiness|isolation|sleep|vitals") -> VoiceCommand.NAVIGATE_ISOLATION
+        has("distance|earth|comms") -> VoiceCommand.NAVIGATE_DISTANCE
+        has("gravity|exercise|fitness") -> VoiceCommand.NAVIGATE_GRAVITY
+        has("environment|suit|suit status|map|meter") -> VoiceCommand.NAVIGATE_ENVIRONMENT
         has("drills?|emergencies") -> VoiceCommand.NAVIGATE_DRILLS
         has("dashboard") -> VoiceCommand.TOGGLE_QUICK
         else -> null

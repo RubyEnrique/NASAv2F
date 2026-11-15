@@ -13,24 +13,31 @@ enum class DashboardMode {
  * Spatial dashboard tiles. [ring] is the head-turn loop
  * MENTAL -> VITALS -> RADIATION -> MAP -> (back to) MENTAL. DRILLS sits below the ring.
  */
-enum class DashboardPage(val title: String) {
-  MENTAL("MENTAL"),
-  VITALS("VITALS"),
-  RADIATION("RADIATION"),
-  MAP("MAP"),
-  DRILLS("DRILLS");
+/**
+ * Spatial dashboard tiles, one per NASA human-spaceflight hazard. [ring] is the head-turn loop
+ * H1 -> H2 -> H3 -> H4 -> H5 -> (back to) H1. H1-H3 focus on the mind, H4 on maintenance against
+ * atrophy, H5 on live visualisation. DRILLS sits below the ring (look down).
+ */
+enum class DashboardPage(val hazard: Int, val title: String, val focus: String) {
+  RADIATION(1, "Space Radiation", "Mind · protect cognition"),
+  ISOLATION(2, "Isolation & Confinement", "Mind · load, sleep, rhythm"),
+  DISTANCE(3, "Distance from Earth", "Mind · self-sufficiency"),
+  GRAVITY(4, "Gravity", "Body · prevent atrophy"),
+  ENVIRONMENT(5, "Hostile Environment", "Live · habitability & map"),
+  DRILLS(0, "Drills", "Emergency training");
 
   companion object {
-    val ring: List<DashboardPage> = listOf(MENTAL, VITALS, RADIATION, MAP)
+    val ring: List<DashboardPage> = listOf(RADIATION, ISOLATION, DISTANCE, GRAVITY, ENVIRONMENT)
+    val HOME: DashboardPage = ISOLATION
 
     fun ringNext(page: DashboardPage): DashboardPage {
       val idx = ring.indexOf(page)
-      return if (idx < 0) MENTAL else ring[(idx + 1) % ring.size]
+      return if (idx < 0) HOME else ring[(idx + 1) % ring.size]
     }
 
     fun ringPrevious(page: DashboardPage): DashboardPage {
       val idx = ring.indexOf(page)
-      return if (idx < 0) MAP else ring[(idx - 1 + ring.size) % ring.size]
+      return if (idx < 0) HOME else ring[(idx - 1 + ring.size) % ring.size]
     }
   }
 }
@@ -154,14 +161,14 @@ class HandGestureClassifier {
     hands: List<List<HandLandmarkPoint>>,
     timestampMs: Long,
     currentMode: DashboardMode,
-    currentPage: DashboardPage = DashboardPage.MAP,
+    currentPage: DashboardPage = DashboardPage.ENVIRONMENT,
   ): GestureUpdate = process(hands.map { HandObservation(it) }, timestampMs, currentMode, currentPage)
 
   fun process(
     observations: List<HandObservation>,
     timestampMs: Long,
     currentMode: DashboardMode,
-    currentPage: DashboardPage = DashboardPage.MAP,
+    currentPage: DashboardPage = DashboardPage.ENVIRONMENT,
   ): GestureUpdate {
     val hands = observations.filter { it.landmarks.size >= 21 }
     val resolved = hands.map { it to resolvePose(it) }
@@ -178,8 +185,8 @@ class HandGestureClassifier {
 
     val dashboardOpen = currentMode != DashboardMode.CLOSED
 
-    // 1. Map pinch (only on the MAP tile, and only for hands not showing a named pose).
-    if (dashboardOpen && currentPage == DashboardPage.MAP) {
+    // 1. Map pinch (only on the ENVIRONMENT/map tile, and only for hands not showing a named pose).
+    if (dashboardOpen && currentPage == DashboardPage.ENVIRONMENT) {
       val pinchCandidates = resolved.filter { it.second == HandPose.NONE }.map { it.first.landmarks }
       val pinch = detectMapPinch(pinchCandidates, timestampMs)
       if (pinch.mapPinchActive) {

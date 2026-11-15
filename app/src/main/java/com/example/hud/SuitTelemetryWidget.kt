@@ -33,12 +33,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.radiation.RadiationStatus
 import com.example.suit.SuitTelemetry
-import com.example.ui.theme.IosLabelPrimary
-import com.example.ui.theme.IosLabelSecondary
-import com.example.ui.theme.IosSfAmber
-import com.example.ui.theme.IosSfBlue
-import com.example.ui.theme.IosSfGreen
-import com.example.ui.theme.IosSfRed
 import com.example.ui.theme.SpecularWhite
 
 /** Lower-right visor card: EMU consumables (NASA SUITS fields), helmet CO2, dose rate, EVA clock. */
@@ -55,25 +49,30 @@ fun SuitTelemetryWidget(
       .animateFloat(0f, 1f, infiniteRepeatable(tween(1400, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "suit_pulse_v")
   val alarm = suit.isLowPower || suit.isOxygenLow || !suit.isPressureNominal
   GlassPanel(
-    modifier = modifier.width(228.dp).testTag("suit_hud_widget"),
-    corner = 24.dp,
-    accent = if (alarm) IosSfRed.copy(alpha = 0.5f + 0.5f * pulse) else null,
+    modifier = modifier.width(222.dp).testTag("suit_hud_widget"),
+    corner = 22.dp,
+    accent = if (alarm) Ios.Red.copy(alpha = 0.5f + 0.5f * pulse) else null,
   ) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 9.dp)) {
+      Row(Modifier.padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Dot(Ios.Blue)
+        Spacer(Modifier.width(5.dp))
+        Text("AxEMU suit", style = hudText(9.sp, Ios.Blue))
+      }
       Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-        RingStat("O₂", suit.oxyPriStoragePct, formatDuration(suit.oxyTimeLeftSec), if (suit.isOxygenLow) IosSfRed else IosSfBlue)
+        RingStat("O₂", suit.oxyPriStoragePct, formatDuration(suit.oxyTimeLeftSec), if (suit.isOxygenLow) Ios.Red else Ios.Cyan)
         RingStat(
-          "PWR",
+          "Power",
           suit.primaryBatteryPct,
           formatDuration(suit.batteryTimeLeftSec),
-          if (suit.isLowPower) IosSfRed else IosSfGreen,
+          if (suit.isLowPower) Ios.Red else Ios.Green,
           percentTag = "suit_widget_pwr_text",
         )
         RingStat(
-          "SUIT",
+          "Suit",
           (suit.suitPressureTotalPsi / 5f * 100f),
           fmt("%.1fpsi", suit.suitPressureTotalPsi),
-          if (suit.isPressureNominal) IosSfGreen else IosSfRed,
+          if (suit.isPressureNominal) Ios.Green else Ios.Red,
           centerOverride = fmt("%.1f", suit.suitPressureTotalPsi),
         )
       }
@@ -85,23 +84,23 @@ fun SuitTelemetryWidget(
           "CO₂",
           fmt("%.1fmm", suit.helmetCo2MmHg),
           when {
-            suit.helmetCo2MmHg >= 6f -> IosSfRed
-            suit.helmetCo2MmHg >= 3f -> IosSfAmber
-            else -> IosSfGreen
+            suit.helmetCo2MmHg >= 6f -> Ios.Red
+            suit.helmetCo2MmHg >= 3f -> Ios.Orange
+            else -> Ios.Green
           },
         )
         Cell(
-          "RAD",
+          "Rad",
           fmt("%.0fµSv/h", doseRateUsvPerHour),
           when (radiationStatus) {
-            RadiationStatus.STORM -> IosSfRed
-            RadiationStatus.ELEVATED -> IosSfAmber
-            RadiationStatus.NOMINAL -> IosLabelPrimary
+            RadiationStatus.STORM -> Ios.Red
+            RadiationStatus.ELEVATED -> Ios.Orange
+            RadiationStatus.NOMINAL -> Ios.Label
           },
           tag = "suit_rad_text",
         )
-        Cell("FAN", fmt("%.0fk", suit.fanPriRpm / 1000f), if (suit.isFanFault) IosSfRed else IosLabelPrimary)
-        Cell("EVA", formatDuration(evaSeconds), IosLabelPrimary, tag = "suit_widget_eva_text")
+        Cell("Fan", fmt("%.0fk", suit.fanPriRpm / 1000f), if (suit.isFanFault) Ios.Red else Ios.Label)
+        Cell("EVA", formatDuration(evaSeconds), Ios.Label, tag = "suit_widget_eva_text")
       }
     }
   }
@@ -133,7 +132,7 @@ private fun RingStat(
     }
     Spacer(Modifier.width(4.dp))
     Column {
-      Text(label, style = hudText(7.sp, IosLabelSecondary, FontWeight.Medium))
+      Text(label, style = IosType.caption)
       Text(sub, style = hudText(8.5.sp, color))
     }
   }
@@ -142,7 +141,7 @@ private fun RingStat(
 @Composable
 private fun Cell(label: String, value: String, color: Color, tag: String? = null) {
   Column(horizontalAlignment = Alignment.CenterHorizontally) {
-    Text(label, style = hudText(6.5.sp, IosLabelSecondary, FontWeight.Medium))
-    Text(value, style = hudText(9.sp, color), modifier = if (tag != null) Modifier.testTag(tag) else Modifier)
+    Text(label, style = IosType.caption)
+    Text(value, style = hudText(10.sp, color), modifier = if (tag != null) Modifier.testTag(tag) else Modifier)
   }
 }
