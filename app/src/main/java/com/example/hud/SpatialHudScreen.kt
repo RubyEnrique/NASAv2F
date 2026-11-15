@@ -1,27 +1,30 @@
 package com.example.hud
 
+import android.graphics.Bitmap
 import android.graphics.RenderEffect
 import android.graphics.Shader
 import android.os.Build
 import android.util.Log
+import android.util.Size as AndroidSize
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ConcurrentCamera
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
+import androidx.camera.core.UseCaseGroup
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateDp
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.core.updateTransition
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -43,18 +46,17 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
-import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -62,8 +64,10 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -71,35 +75,33 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.min
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.example.camera.EyeOverlay
+import com.example.camera.FaceEyeAnalyzer
 import com.example.camera.MediaPipeHandAnalyzer
-import com.example.gesture.DashboardMode
+import com.example.eye.EyeSample
+import com.example.eye.EyeTrackingStatus
 import com.example.gesture.DashboardPage
-import com.example.gesture.HandLandmarkPoint
+import com.example.gesture.HandObservation
+import com.example.gesture.HandPose
 import com.example.gesture.SwipeDirection
+import com.example.mental.CognitiveLevel
 import com.example.mental.EmergencyDrill
-import com.example.mental.MentalState
-import com.example.mental.StressLevel
-import com.example.ui.theme.IosGlassHairline
+import com.example.radiation.RadiationStatus
 import com.example.ui.theme.IosLabelPrimary
 import com.example.ui.theme.IosLabelSecondary
 import com.example.ui.theme.IosSfAmber
 import com.example.ui.theme.IosSfBlue
 import com.example.ui.theme.IosSfGreen
-import com.example.ui.theme.IosSfIndigo
-import com.example.ui.theme.IosSfPink
 import com.example.ui.theme.IosSfRed
 import com.example.ui.theme.ObsidianBlack
 import com.example.ui.theme.SpecularWhite
-import java.util.Locale
 import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 
@@ -107,66 +109,58 @@ import kotlin.math.roundToInt
 fun SpatialHudScreen(
   uiState: HudUiState,
   onRequestPermission: () -> Unit,
-  onHandsDetected: (List<List<HandLandmarkPoint>>, Long) -> Unit,
+  onHandsDetected: (List<HandObservation>, Long) -> Unit,
   onInvisibleCornerTap: () -> Unit,
   modifier: Modifier = Modifier,
   onRequestLocationPermission: () -> Unit = {},
+  onEyeSample: (EyeSample) -> Unit = {},
+  onEyeTrackingStatus: (EyeTrackingStatus) -> Unit = {},
+  enableLensEffect: Boolean = true,
 ) {
   val blurRadius by
     animateFloatAsState(
-      targetValue = if (uiState.hasCameraPermission && uiState.isDashboardOpen) 54f else 0f,
-      animationSpec =
-        spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow),
+      targetValue = if (uiState.hasCameraPermission && uiState.isDashboardOpen) 34f else 0f,
+      animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow),
       label = "backdrop_blur_radius",
     )
-
-  // Gently dim and recede corner telemetry cards when the frosted dashboard is open.
-  val telemetryAlpha by
-    animateFloatAsState(
-      targetValue = if (uiState.isDashboardOpen) 0.34f else 1f,
-      animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
-      label = "telemetry_dim_alpha",
-    )
-  val telemetryScale by
-    animateFloatAsState(
-      targetValue = if (uiState.isDashboardOpen) 0.97f else 1f,
-      animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
-      label = "telemetry_dim_scale",
-    )
-
+  val telemetryAlpha by animateFloatAsState(if (uiState.isDashboardOpen) 0.30f else 1f, tween(260), label = "telemetry_alpha")
   val density = LocalDensity.current.density
+
+  // Eye preview frames live only in the UI layer (never in ViewModel state).
+  var eyePreview by remember { mutableStateOf<ImageBitmap?>(null) }
+  var eyeOverlay by remember { mutableStateOf<EyeOverlay?>(null) }
+  val previewWanted =
+    uiState.isDashboardOpen && uiState.currentPage == DashboardPage.MENTAL && uiState.eyePreviewEnabled
 
   Box(modifier = modifier.fillMaxSize().background(ObsidianBlack)) {
     if (uiState.hasCameraPermission) {
-      RearCameraPassThrough(
+      DualCameraPassThrough(
         blurRadius = blurRadius,
+        previewWanted = previewWanted,
         onHandsDetected = onHandsDetected,
+        onEyeSample = onEyeSample,
+        onEyeTrackingStatus = onEyeTrackingStatus,
+        onEyePreview = { bmp, overlay ->
+          eyePreview = bmp.asImageBitmap()
+          eyeOverlay = overlay
+        },
         modifier = Modifier.fillMaxSize(),
       )
+      LensVignette(Modifier.fillMaxSize())
 
-      // Consume every touch and swipe gesture across the viewport to lock the user in.
+      // Consume every touch to keep the wearer locked in.
       Box(
         modifier =
-          Modifier.fillMaxSize()
-            .testTag("hud_touch_shield")
-            .pointerInput(Unit) {
-              awaitEachGesture {
-                while (true) {
-                  val event = awaitPointerEvent()
-                  event.changes.forEach { it.consume() }
-                }
+          Modifier.fillMaxSize().testTag("hud_touch_shield").pointerInput(Unit) {
+            awaitEachGesture {
+              while (true) {
+                awaitPointerEvent().changes.forEach { it.consume() }
               }
             }
+          }
       )
 
-      // Safe-area HUD layer avoids clipping by landscape display cutouts / punch-holes.
       Box(modifier = Modifier.fillMaxSize().displayCutoutPadding()) {
-        PalmHoldProgressRing(
-          progress = uiState.palmHoldProgress,
-          visible = uiState.dashboardMode != DashboardMode.PERMANENT && uiState.palmHoldProgress > 0.015f,
-          modifier = Modifier.align(Alignment.Center),
-        )
-
         VitalsTelemetryWidget(
           heartRateBpm = uiState.heartRateBpm,
           systolicBp = uiState.systolicBp,
@@ -175,94 +169,105 @@ fun SpatialHudScreen(
           coreTempCelsius = uiState.coreTempCelsius,
           hydrationPercent = uiState.hydrationPercent,
           isBiometricSensorLost = uiState.isBiometricSensorLost,
+          cognitiveLoad = uiState.cognitive.index,
+          cognitiveLevel = uiState.cognitive.level,
           modifier =
-            Modifier.align(Alignment.BottomStart)
-              .padding(start = 16.dp, bottom = 14.dp)
-              .graphicsLayer {
-                alpha = telemetryAlpha
-                scaleX = telemetryScale
-                scaleY = telemetryScale
-                rotationY = 11f
-                rotationX = 3f
-                cameraDistance = 18f * density
-                transformOrigin = TransformOrigin(0f, 0.5f)
-              },
+            Modifier.align(Alignment.BottomStart).padding(start = 18.dp, bottom = 16.dp).graphicsLayer {
+              alpha = telemetryAlpha
+              rotationY = 14f
+              rotationX = 4f
+              cameraDistance = 14f * density
+              transformOrigin = TransformOrigin(0f, 0.5f)
+            },
         )
 
         SuitTelemetryWidget(
-          suitPressurePsi = uiState.suitPressurePsi,
-          oxygenPercent = uiState.oxygenPercent,
-          oxygenHours = uiState.oxygenHours,
-          suitPowerPercent = uiState.suitPowerPercent,
-          suitPowerHours = uiState.suitPowerHours,
-          ppCo2MmHg = uiState.ppCo2MmHg,
-          radiationMSv = uiState.radiationMSv,
-          windSpeedMps = uiState.windSpeedMps,
+          suit = uiState.suit,
+          doseRateUsvPerHour = uiState.radiation.doseRateUsvPerHour,
+          radiationStatus = uiState.radiation.status,
           evaSeconds = uiState.evaSeconds,
           modifier =
-            Modifier.align(Alignment.BottomEnd)
-              .padding(end = 16.dp, bottom = 14.dp)
-              .graphicsLayer {
-                alpha = telemetryAlpha
-                scaleX = telemetryScale
-                scaleY = telemetryScale
-                rotationY = -11f
-                rotationX = 3f
-                cameraDistance = 18f * density
-                transformOrigin = TransformOrigin(1f, 0.5f)
-              },
+            Modifier.align(Alignment.BottomEnd).padding(end = 18.dp, bottom = 16.dp).graphicsLayer {
+              alpha = telemetryAlpha
+              rotationY = -14f
+              rotationX = 4f
+              cameraDistance = 14f * density
+              transformOrigin = TransformOrigin(1f, 0.5f)
+            },
         )
 
-        VisionTriDashboard(
+        SpatialDashboard(
           uiState = uiState,
+          eyePreview = eyePreview,
+          eyeOverlay = eyeOverlay,
           onRequestLocationPermission = onRequestLocationPermission,
+          enableLensEffect = enableLensEffect,
           modifier = Modifier.fillMaxSize(),
         )
 
-        TwoFistsDualRingCue(
-          visible = uiState.dashboardMode == DashboardMode.PERMANENT && uiState.isTwoFistsReady,
-          modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
-        )
+        Column(
+          modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp),
+          horizontalAlignment = Alignment.CenterHorizontally,
+          verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+          GestureChip(uiState)
+          MicMeter(uiState)
+        }
       }
     } else {
-      ZeroTextPermissionAperture(
-        onRequestPermission = onRequestPermission,
-        modifier = Modifier.fillMaxSize(),
-      )
+      ZeroTextPermissionAperture(onRequestPermission, Modifier.fillMaxSize())
     }
 
-    // Always-visible ultra-minimal iOS top-center compass with 24hr time & live phone battery.
-    GameGradientCompass(
-      headingDegrees = uiState.headingDegrees,
-      batteryPercent = uiState.batteryPercent,
+    Column(
       modifier = Modifier.align(Alignment.TopCenter).displayCutoutPadding().padding(top = 6.dp),
-    )
+      horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+      GameGradientCompass(headingDegrees = uiState.headingDegrees, batteryPercent = uiState.batteryPercent)
+      AlertBanner(uiState)
+    }
 
-    // Invisible 5-tap exit zone at the upper-right corner (zero visual tell, zero ripple).
+    // Invisible 5-tap exit zone (upper-right corner).
     Box(
       modifier =
         Modifier.align(Alignment.TopEnd)
           .size(64.dp)
           .testTag("invisible_exit_zone")
-          .clickable(
-            interactionSource = remember { MutableInteractionSource() },
-            indication = null,
-            onClick = onInvisibleCornerTap,
-          )
+          .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onInvisibleCornerTap)
     )
   }
 }
 
+// ------------------------------------------------------------------ Cameras
+
 @Composable
-private fun RearCameraPassThrough(
+private fun DualCameraPassThrough(
   blurRadius: Float,
-  onHandsDetected: (List<List<HandLandmarkPoint>>, Long) -> Unit,
+  previewWanted: Boolean,
+  onHandsDetected: (List<HandObservation>, Long) -> Unit,
+  onEyeSample: (EyeSample) -> Unit,
+  onEyeTrackingStatus: (EyeTrackingStatus) -> Unit,
+  onEyePreview: (Bitmap, EyeOverlay?) -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
   val lifecycleOwner = LocalLifecycleOwner.current
-  val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
-  val handAnalyzer = remember(context) { MediaPipeHandAnalyzer(context, onHandsDetected) }
+  val handExecutor = remember { Executors.newSingleThreadExecutor() }
+  val faceExecutor = remember { Executors.newSingleThreadExecutor() }
+  val latestHands by rememberUpdatedState(onHandsDetected)
+  val latestEye by rememberUpdatedState(onEyeSample)
+  val latestStatus by rememberUpdatedState(onEyeTrackingStatus)
+  val latestPreview by rememberUpdatedState(onEyePreview)
+  val handAnalyzer = remember(context) { MediaPipeHandAnalyzer(context) { h, t -> latestHands(h, t) } }
+  val faceAnalyzer =
+    remember(context) {
+      FaceEyeAnalyzer(
+        context,
+        onEyeSample = { latestEye(it) },
+        onPreviewFrame = { bmp, overlay -> ContextCompat.getMainExecutor(context).execute { latestPreview(bmp, overlay) } },
+      )
+    }
+  LaunchedEffect(previewWanted) { faceAnalyzer.previewEnabled = previewWanted }
+
   val previewView =
     remember(context) {
       PreviewView(context).apply {
@@ -271,46 +276,79 @@ private fun RearCameraPassThrough(
       }
     }
 
-  DisposableEffect(lifecycleOwner, previewView, handAnalyzer) {
-    val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
-    val mainExecutor = ContextCompat.getMainExecutor(context)
-
-    cameraProviderFuture.addListener(
+  DisposableEffect(lifecycleOwner, previewView, handAnalyzer, faceAnalyzer) {
+    val providerFuture = ProcessCameraProvider.getInstance(context)
+    providerFuture.addListener(
       {
         try {
-          val cameraProvider = cameraProviderFuture.get()
-          val preview =
-            Preview.Builder().build().also { it.surfaceProvider = previewView.surfaceProvider }
-
-          val imageAnalysis =
+          val provider = providerFuture.get()
+          val analysisResolution =
+            ResolutionSelector.Builder()
+              .setResolutionStrategy(ResolutionStrategy(AndroidSize(640, 480), ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER))
+              .build()
+          val preview = Preview.Builder().build().also { it.surfaceProvider = previewView.surfaceProvider }
+          val handAnalysis =
             ImageAnalysis.Builder()
+              .setResolutionSelector(analysisResolution)
               .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
               .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
               .build()
-              .also { it.setAnalyzer(analysisExecutor, handAnalyzer) }
+              .also { it.setAnalyzer(handExecutor, handAnalyzer) }
 
-          cameraProvider.unbindAll()
-          cameraProvider.bindToLifecycle(
-            lifecycleOwner,
-            CameraSelector.DEFAULT_BACK_CAMERA,
-            preview,
-            imageAnalysis,
+          provider.unbindAll()
+          val concurrentOk =
+            provider.availableConcurrentCameraInfos.any { pair ->
+              pair.any { it.lensFacing == CameraSelector.LENS_FACING_FRONT } &&
+                pair.any { it.lensFacing == CameraSelector.LENS_FACING_BACK }
+            }
+          var eyeBound = false
+          if (concurrentOk && faceAnalyzer.isAvailable) {
+            try {
+              val faceAnalysis =
+                ImageAnalysis.Builder()
+                  .setResolutionSelector(analysisResolution)
+                  .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
+                  .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                  .build()
+                  .also { it.setAnalyzer(faceExecutor, faceAnalyzer) }
+              val back = UseCaseGroup.Builder().addUseCase(preview).addUseCase(handAnalysis).build()
+              val front = UseCaseGroup.Builder().addUseCase(faceAnalysis).build()
+              provider.bindToLifecycle(
+                listOf(
+                  ConcurrentCamera.SingleCameraConfig(CameraSelector.DEFAULT_BACK_CAMERA, back, lifecycleOwner),
+                  ConcurrentCamera.SingleCameraConfig(CameraSelector.DEFAULT_FRONT_CAMERA, front, lifecycleOwner),
+                )
+              )
+              eyeBound = true
+            } catch (t: Throwable) {
+              Log.w(TAG, "Concurrent front+rear binding failed; eye tracking disabled", t)
+              provider.unbindAll()
+            }
+          }
+          if (!eyeBound) {
+            provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, handAnalysis)
+          }
+          latestStatus(
+            when {
+              eyeBound -> EyeTrackingStatus.STARTING
+              !faceAnalyzer.isAvailable -> EyeTrackingStatus.MODEL_ERROR
+              else -> EyeTrackingStatus.UNSUPPORTED_DEVICE
+            }
           )
         } catch (t: Throwable) {
-          Log.w("SpatialHudScreen", "CameraX binding failed", t)
+          Log.w(TAG, "CameraX binding failed", t)
         }
       },
-      mainExecutor,
+      ContextCompat.getMainExecutor(context),
     )
-
     onDispose {
       try {
-        if (cameraProviderFuture.isDone) {
-          cameraProviderFuture.get().unbindAll()
-        }
+        if (providerFuture.isDone) providerFuture.get().unbindAll()
       } catch (_: Throwable) {}
       handAnalyzer.close()
-      analysisExecutor.shutdown()
+      faceAnalyzer.close()
+      handExecutor.shutdown()
+      faceExecutor.shutdown()
     }
   }
 
@@ -319,11 +357,7 @@ private fun RearCameraPassThrough(
     update = { view ->
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         view.setRenderEffect(
-          if (blurRadius > 1.5f) {
-            RenderEffect.createBlurEffect(blurRadius, blurRadius, Shader.TileMode.CLAMP)
-          } else {
-            null
-          }
+          if (blurRadius > 1.5f) RenderEffect.createBlurEffect(blurRadius, blurRadius, Shader.TileMode.CLAMP) else null
         )
       }
     },
@@ -331,1347 +365,262 @@ private fun RearCameraPassThrough(
   )
 }
 
+/** Dark curved edge falloff that sells the visor / fish-eye look over the passthrough. */
 @Composable
-private fun PalmHoldProgressRing(
-  progress: Float,
-  visible: Boolean,
-  modifier: Modifier = Modifier,
-) {
-  val alpha by
-    animateFloatAsState(
-      targetValue = if (visible) 1f else 0f,
-      animationSpec = tween(durationMillis = 150),
-      label = "ring_alpha",
-    )
-  val animatedSweep by
-    animateFloatAsState(
-      targetValue = progress.coerceIn(0f, 1f),
-      animationSpec = tween(durationMillis = 60),
-      label = "ring_sweep",
-    )
-
-  if (alpha > 0.01f) {
-    Canvas(modifier = modifier.size(48.dp).testTag("palm_hold_ring")) {
-      val strokeWidth = 2.4.dp.toPx()
-      val inset = strokeWidth / 2f
-      val arcSize = Size(size.width - strokeWidth, size.height - strokeWidth)
-      val topLeft = Offset(inset, inset)
-
-      drawArc(
-        color = SpecularWhite.copy(alpha = 0.22f * alpha),
-        startAngle = 0f,
-        sweepAngle = 360f,
-        useCenter = false,
-        topLeft = topLeft,
-        size = arcSize,
-        style = Stroke(width = strokeWidth, cap = StrokeCap.Round),
+private fun LensVignette(modifier: Modifier) {
+  Canvas(modifier) {
+    drawRect(
+      Brush.radialGradient(
+        0.55f to Color.Transparent,
+        0.85f to ObsidianBlack.copy(alpha = 0.28f),
+        1.0f to ObsidianBlack.copy(alpha = 0.62f),
+        center = Offset(size.width / 2f, size.height / 2f),
+        radius = maxOf(size.width, size.height) * 0.62f,
       )
-
-      drawArc(
-        color = SpecularWhite.copy(alpha = 0.94f * alpha),
-        startAngle = -90f,
-        sweepAngle = 360f * animatedSweep,
-        useCenter = false,
-        topLeft = topLeft,
-        size = arcSize,
-        style = Stroke(width = strokeWidth, cap = StrokeCap.Round),
-      )
-    }
+    )
   }
 }
 
-@Composable
-private fun TwoFistsDualRingCue(
-  visible: Boolean,
-  modifier: Modifier = Modifier,
-) {
-  val alpha by
-    animateFloatAsState(
-      targetValue = if (visible) 1f else 0f,
-      animationSpec = tween(durationMillis = 180),
-      label = "dual_ring_alpha",
-    )
-  val infiniteTransition = rememberInfiniteTransition(label = "dual_ring_pulse")
-  val pulse by
-    infiniteTransition.animateFloat(
-      initialValue = 0f,
-      targetValue = 1f,
-      animationSpec =
-        infiniteRepeatable(
-          animation = tween(durationMillis = 700, easing = FastOutSlowInEasing),
-          repeatMode = RepeatMode.Reverse,
-        ),
-      label = "dual_ring_pulse_wave",
-    )
-
-  if (alpha > 0.01f) {
-    Canvas(modifier = modifier.size(width = 88.dp, height = 32.dp).testTag("two_fists_dual_ring")) {
-      val centerY = size.height / 2f
-      val centerX = size.width / 2f
-      val spacing = 15.dp.toPx()
-      val baseRadius = 7.5.dp.toPx() * (0.90f + 0.18f * pulse)
-      val strokeWidth = 1.8.dp.toPx()
-      val ringAlpha = (0.55f + 0.40f * pulse) * alpha
-
-      listOf(-spacing, spacing).forEach { dx ->
-        val ringCenter = Offset(centerX + dx, centerY)
-        drawCircle(
-          brush =
-            Brush.verticalGradient(
-              colors =
-                listOf(
-                  SpecularWhite.copy(alpha = ringAlpha),
-                  IosSfBlue.copy(alpha = ringAlpha * 0.85f),
-                ),
-            ),
-          radius = baseRadius,
-          center = ringCenter,
-          style = Stroke(width = strokeWidth, cap = StrokeCap.Round),
-        )
-      }
-    }
-  }
-}
+// ------------------------------------------------------------------ Spatial tiles
 
 @Composable
-private fun VisionTriDashboard(
+private fun SpatialDashboard(
   uiState: HudUiState,
+  eyePreview: ImageBitmap?,
+  eyeOverlay: EyeOverlay?,
   onRequestLocationPermission: () -> Unit,
+  enableLensEffect: Boolean,
   modifier: Modifier = Modifier,
 ) {
-  val transition = updateTransition(targetState = uiState.isDashboardOpen, label = "ios_dashboard_transition")
+  val open = uiState.isDashboardOpen
+  val reveal by animateFloatAsState(if (open) 1f else 0f, spring(dampingRatio = 0.85f, stiffness = 320f), label = "dash_reveal")
+  if (reveal <= 0.01f) return
 
-  val panelAlpha by
-    transition.animateFloat(
-      transitionSpec = {
-        if (targetState) tween(durationMillis = 260, easing = FastOutSlowInEasing)
-        else tween(durationMillis = 200, easing = FastOutSlowInEasing)
-      },
-      label = "panel_alpha",
-    ) { open ->
-      if (open) 1f else 0f
+  // Re-anchoring (swipes / recenter / voice) glides instead of jumping.
+  val anchorYaw by animateFloatAsState(uiState.anchorYawDegrees, tween(380, easing = FastOutSlowInEasing), label = "anchor_yaw")
+  val anchorPitch by animateFloatAsState(uiState.anchorPitchDegrees, tween(380, easing = FastOutSlowInEasing), label = "anchor_pitch")
+  val cue = remember { Animatable(0f) }
+  LaunchedEffect(uiState.swipeCueId) {
+    if (uiState.swipeCueId > 0L) {
+      cue.snapTo(1f)
+      cue.animateTo(0f, tween(420))
     }
+  }
 
-  val panelScale by
-    transition.animateFloat(
-      transitionSpec = {
-        if (targetState) {
-          spring(dampingRatio = 0.84f, stiffness = 340f)
-        } else {
-          tween(durationMillis = 220, easing = FastOutSlowInEasing)
+  BoxWithConstraints(modifier.background(ObsidianBlack.copy(alpha = 0.12f * reveal)).fishEyeLens(enabled = enableLensEffect)) {
+    val density = LocalDensity.current
+    val wPx = constraints.maxWidth.toFloat()
+    val hPx = constraints.maxHeight.toFloat()
+    val pxPerDeg = wPx / SpatialLayout.VIEW_HFOV_DEG
+    val tileW = minOf(maxWidth * 0.56f, 400.dp)
+    val tileH = minOf(maxHeight * 0.66f, 250.dp)
+    val tileWPx = with(density) { tileW.toPx() }
+    val tileHPx = with(density) { tileH.toPx() }
+
+    val pages = DashboardPage.ring + DashboardPage.DRILLS
+    // Draw farthest first so the focused tile sits on top.
+    val ordered =
+      pages
+        .map { page ->
+          val yaw = SpatialLayout.tileYaw(page, anchorYaw, uiState.headingDegrees)
+          val pitch = SpatialLayout.tilePitch(page, anchorPitch)
+          page to SpatialLayout.project(yaw, pitch, uiState.headingDegrees, uiState.pitchDegrees)
         }
-      },
-      label = "panel_scale",
-    ) { open ->
-      if (open) 1f else 0.86f
-    }
+        .sortedByDescending { (_, p) -> kotlin.math.abs(p.xDeg) + kotlin.math.abs(p.yDeg) }
 
-  val panelOffsetY by
-    transition.animateDp(
-      transitionSpec = {
-        if (targetState) {
-          spring(dampingRatio = 0.85f, stiffness = 340f)
-        } else {
-          tween(durationMillis = 220, easing = FastOutSlowInEasing)
+    for ((page, proj) in ordered) {
+      if (!proj.visible) continue
+      val focused = page == uiState.currentPage
+      val accent =
+        when {
+          page == DashboardPage.MENTAL && uiState.cognitive.level != CognitiveLevel.NOMINAL -> levelColor(uiState.cognitive.level)
+          page == DashboardPage.RADIATION && uiState.radiation.status == RadiationStatus.STORM -> IosSfRed
+          focused -> IosSfBlue
+          else -> null
         }
-      },
-      label = "panel_offset_y",
-    ) { open ->
-      if (open) 0.dp else 22.dp
-    }
-
-  val scrimAlpha by
-    transition.animateFloat(
-      transitionSpec = { tween(durationMillis = 240, easing = FastOutSlowInEasing) },
-      label = "scrim_alpha",
-    ) { open ->
-      if (open) 0.14f else 0f
-    }
-
-  if (panelAlpha > 0.01f) {
-    val pages = DashboardPage.entries
-    val pagerState =
-      rememberPagerState(
-        initialPage = uiState.currentPage.ordinal,
-        pageCount = { pages.size },
-      )
-    val swipeEdgeCueAlpha = remember { Animatable(0f) }
-
-    LaunchedEffect(uiState.currentPage) {
-      if (pagerState.currentPage != uiState.currentPage.ordinal) {
-        pagerState.animateScrollToPage(
-          page = uiState.currentPage.ordinal,
-          animationSpec = tween(durationMillis = 300, easing = FastOutSlowInEasing),
-        )
-      }
-    }
-
-    LaunchedEffect(uiState.swipeCueId) {
-      if (uiState.swipeCueId > 0L && uiState.lastSwipeDirection != null) {
-        swipeEdgeCueAlpha.snapTo(1f)
-        swipeEdgeCueAlpha.animateTo(
-          targetValue = 0f,
-          animationSpec = tween(durationMillis = 360, easing = FastOutSlowInEasing),
-        )
-      }
-    }
-
-    BoxWithConstraints(
-      modifier =
-        modifier
-          .background(ObsidianBlack.copy(alpha = scrimAlpha))
-          .padding(top = 58.dp, bottom = 38.dp, start = 20.dp, end = 20.dp),
-      contentAlignment = Alignment.Center,
-    ) {
-      val panelWidth = min(maxWidth * 0.80f, 700.dp)
-      val panelHeight = min(maxHeight * 0.90f, 340.dp)
-
-      Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
+      GlassPanel(
+        accent = accent,
         modifier =
-          Modifier.offset(y = panelOffsetY).graphicsLayer {
-            alpha = panelAlpha
-            scaleX = panelScale
-            scaleY = panelScale
-          },
-      ) {
-        val windowShape = RoundedCornerShape(40.dp)
-        val glassSheenBrush =
-          Brush.linearGradient(
-            colors =
-              listOf(
-                SpecularWhite.copy(alpha = 0.28f),
-                SpecularWhite.copy(alpha = 0.10f),
-                SpecularWhite.copy(alpha = 0.18f),
-              ),
-          )
-        val specularRimBrush =
-          Brush.linearGradient(
-            colors =
-              listOf(
-                SpecularWhite.copy(alpha = 0.72f),
-                SpecularWhite.copy(alpha = 0.22f),
-                SpecularWhite.copy(alpha = 0.44f),
-              ),
-          )
-
-        Box(
-          modifier =
-            Modifier.widthIn(min = 280.dp)
-              .size(width = panelWidth, height = panelHeight)
-              .testTag("vision_dashboard_panel")
-              .clip(windowShape)
-              .background(SpecularWhite.copy(alpha = 0.16f))
-              .background(glassSheenBrush)
-              .border(width = 1.dp, brush = specularRimBrush, shape = windowShape),
-        ) {
-          HorizontalPager(
-            state = pagerState,
-            userScrollEnabled = false,
-            beyondViewportPageCount = 1,
-            modifier = Modifier.fillMaxSize().padding(bottom = 26.dp),
-          ) { pageIndex ->
-            when (pages[pageIndex]) {
-              DashboardPage.VITALS -> InferredVitalsDashboardPage(uiState = uiState)
-              DashboardPage.MAP ->
-                MarsMapMeterDashboardPage(
-                  uiState = uiState,
-                  onRequestLocationPermission = onRequestLocationPermission,
-                )
-              DashboardPage.SUIT_STATUS -> InferredSuitStatusDashboardPage(uiState = uiState)
-              DashboardPage.COGNITIVE -> CognitiveDashboardPage(mentalState = uiState.mentalState)
-              DashboardPage.DRILLS -> DrillsDashboardPage(activeDrill = uiState.activeDrill)
-            }
-          }
-
-          if (swipeEdgeCueAlpha.value > 0.01f && uiState.lastSwipeDirection != null) {
-            val isLeftEdge = uiState.lastSwipeDirection == SwipeDirection.PREVIOUS
-            val cueAlpha = swipeEdgeCueAlpha.value
-            val glowColors =
-              if (isLeftEdge) {
-                listOf(IosSfBlue.copy(alpha = 0.34f * cueAlpha), Color.Transparent)
-              } else {
-                listOf(Color.Transparent, IosSfBlue.copy(alpha = 0.34f * cueAlpha))
-              }
-            Box(
-              modifier =
-                Modifier.align(if (isLeftEdge) Alignment.CenterStart else Alignment.CenterEnd)
-                  .width(34.dp)
-                  .fillMaxHeight()
-                  .testTag("swipe_edge_cue")
-                  .background(Brush.horizontalGradient(glowColors))
-            ) {
-              Box(
-                modifier =
-                  Modifier.align(if (isLeftEdge) Alignment.CenterStart else Alignment.CenterEnd)
-                    .width(2.5.dp)
-                    .fillMaxHeight(0.54f)
-                    .clip(CircleShape)
-                    .background(SpecularWhite.copy(alpha = 0.72f * cueAlpha))
+          Modifier.offset {
+              IntOffset(
+                (wPx / 2f + proj.xDeg * pxPerDeg - tileWPx / 2f).roundToInt(),
+                (hPx / 2f - proj.yDeg * pxPerDeg - tileHPx / 2f).roundToInt(),
               )
             }
-          }
-
-          DashboardPageDots(
-            pageCount = pages.size,
-            currentIndex = uiState.currentPage.ordinal,
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 14.dp),
-          )
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        Box(
-          modifier =
-            Modifier.width(64.dp)
-              .height(4.5.dp)
-              .clip(CircleShape)
-              .background(SpecularWhite.copy(alpha = 0.56f))
-        )
-      }
-    }
-  }
-}
-
-@Composable
-private fun InferredVitalsDashboardPage(uiState: HudUiState) {
-  val sensorLost = uiState.isBiometricSensorLost
-  val (overallLabel, overallColor) =
-    when {
-      sensorLost -> "SIGNAL LOST" to IosSfRed
-      uiState.heartRateBpm >= 135 || uiState.systolicBp >= 140 -> "ELEVATED" to IosSfAmber
-      uiState.heartRateBpm >= 105 || uiState.speedMps >= 1.0f -> "ACTIVE" to IosSfBlue
-      else -> "NOMINAL" to IosSfGreen
-    }
-  val exertionZone =
-    when {
-      sensorLost -> "OFFLINE"
-      uiState.heartRateBpm >= 135 -> "PEAK"
-      uiState.heartRateBpm >= 105 -> "AEROBIC"
-      else -> "RESTING"
-    }
-  val bpClassification =
-    when {
-      sensorLost -> "OFFLINE"
-      uiState.systolicBp >= 135 -> "EXERTION"
-      else -> "NORMOTENSIVE"
-    }
-  val spo2Classification =
-    when {
-      sensorLost -> "OFFLINE"
-      uiState.spo2Percent >= 95 -> "OPTIMAL"
-      else -> "LOW"
-    }
-  val tempClassification = if (uiState.coreTempCelsius >= 38.0f) "ELEVATED" else "THERMAL OK"
-  val hydrationClassification = if (uiState.hydrationPercent >= 60) "HYDRATED" else "LOW"
-  val coreText = String.format(Locale.US, "%.1f\u00B0C", uiState.coreTempCelsius)
-  val hydrationValue = String.format(Locale.US, "%d%% · %.1fL", uiState.hydrationPercent, uiState.hydrationLiters)
-
-  Column(
-    modifier =
-      Modifier.fillMaxSize()
-        .padding(horizontal = 20.dp, vertical = 14.dp)
-        .testTag("dashboard_page_vitals"),
-    verticalArrangement = Arrangement.spacedBy(10.dp),
-  ) {
-    Row(
-      modifier = Modifier.fillMaxWidth(),
-      horizontalArrangement = Arrangement.SpaceBetween,
-      verticalAlignment = Alignment.CenterVertically,
-    ) {
-      Text(
-        text = "VITALS",
-        style =
-          TextStyle(
-            color = IosLabelPrimary,
-            fontFamily = FontFamily.SansSerif,
-            fontWeight = FontWeight.SemiBold,
-            fontSize = 15.sp,
-            letterSpacing = 0.6.sp,
-          ),
-      )
-      StatusBadgePill(
-        text = overallLabel,
-        color = overallColor,
-        tag = "vitals_status_pill",
-      )
-    }
-
-    Box(modifier = Modifier.fillMaxWidth().height(0.5.dp).background(IosGlassHairline))
-
-    Row(
-      modifier = Modifier.fillMaxWidth().weight(1f),
-      horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-      DashboardMetricCard(
-        label = "HEART RATE",
-        value = if (sensorLost) "--" else "${uiState.heartRateBpm} BPM",
-        inference = exertionZone,
-        accentColor = if (sensorLost) IosLabelSecondary else IosSfPink,
-        modifier = Modifier.weight(1f).fillMaxHeight(),
-      )
-      DashboardMetricCard(
-        label = "BLOOD PRESSURE",
-        value = if (sensorLost) "--/--" else "${uiState.systolicBp}/${uiState.diastolicBp} mmHg",
-        inference = bpClassification,
-        accentColor =
-          when {
-            sensorLost -> IosLabelSecondary
-            uiState.systolicBp >= 135 -> IosSfAmber
-            else -> IosLabelPrimary
-          },
-        modifier = Modifier.weight(1f).fillMaxHeight(),
-      )
-    }
-
-    Row(
-      modifier = Modifier.fillMaxWidth().weight(1f),
-      horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-      DashboardMetricCard(
-        label = "SpO\u2082",
-        value = if (sensorLost) "--" else "${uiState.spo2Percent}%",
-        inference = spo2Classification,
-        accentColor =
-          when {
-            sensorLost -> IosLabelSecondary
-            uiState.spo2Percent < 93 -> IosSfRed
-            else -> IosSfBlue
-          },
-        modifier = Modifier.weight(1f).fillMaxHeight(),
-      )
-      DashboardMetricCard(
-        label = "CORE TEMP",
-        value = coreText,
-        inference = tempClassification,
-        accentColor = if (uiState.coreTempCelsius >= 38.0f) IosSfAmber else IosSfGreen,
-        modifier = Modifier.weight(1f).fillMaxHeight(),
-      )
-      DashboardMetricCard(
-        label = "H\u2082O",
-        value = hydrationValue,
-        inference = hydrationClassification,
-        accentColor = if (uiState.hydrationPercent < 35) IosSfRed else IosSfIndigo,
-        modifier = Modifier.weight(1f).fillMaxHeight(),
-      )
-    }
-  }
-}
-
-@Composable
-private fun InferredSuitStatusDashboardPage(uiState: HudUiState) {
-  val pressureOk = uiState.suitPressurePsi in 3.8f..4.6f
-  val o2Low = uiState.oxygenPercent < 25
-  val isLowPower = uiState.isSuitLowPower
-  val radElevated = uiState.radiationMSv >= 0.50f
-  val co2Elevated = uiState.ppCo2MmHg >= 3.0f
-
-  val (overallLabel, overallColor) =
-    when {
-      !pressureOk -> "PRESSURE WARN" to IosSfRed
-      o2Low -> "O\u2082 LOW" to IosSfRed
-      isLowPower -> "LOW POWER" to IosSfRed
-      uiState.ppCo2MmHg >= 6.0f -> "CO\u2082 CRITICAL" to IosSfRed
-      uiState.radiationMSv >= 1.0f -> "RAD CRITICAL" to IosSfRed
-      radElevated -> "RAD ADVISORY" to IosSfAmber
-      co2Elevated -> "CO\u2082 HIGH" to IosSfAmber
-      else -> "SEALED · NOMINAL" to IosSfGreen
-    }
-
-  val evaMin = uiState.evaSeconds / 60
-  val evaSec = uiState.evaSeconds % 60
-  val evaFormatted = "${evaMin.toString().padStart(2, '0')}:${evaSec.toString().padStart(2, '0')}"
-  val pwrHours = uiState.suitPowerHours
-  val windText = String.format(Locale.US, "%.1f m/s", uiState.windSpeedMps)
-  val radText = String.format(Locale.US, "%.2f mSv", uiState.radiationMSv)
-  val pressureText = String.format(Locale.US, "%.1f psi", uiState.suitPressurePsi)
-  val o2Text = String.format(Locale.US, "%d%% · %.1fh", uiState.oxygenPercent, uiState.oxygenHours)
-  val pwrText = String.format(Locale.US, "%d%% · %.1fh", uiState.suitPowerPercent, pwrHours)
-  val co2Text = String.format(Locale.US, "%.1f mmHg", uiState.ppCo2MmHg)
-
-  Column(
-    modifier =
-      Modifier.fillMaxSize()
-        .padding(horizontal = 20.dp, vertical = 14.dp)
-        .testTag("dashboard_page_suit"),
-    verticalArrangement = Arrangement.spacedBy(10.dp),
-  ) {
-    Row(
-      modifier = Modifier.fillMaxWidth(),
-      horizontalArrangement = Arrangement.SpaceBetween,
-      verticalAlignment = Alignment.CenterVertically,
-    ) {
-      Text(
-        text = "SUIT STATUS",
-        style =
-          TextStyle(
-            color = IosLabelPrimary,
-            fontFamily = FontFamily.SansSerif,
-            fontWeight = FontWeight.SemiBold,
-            fontSize = 15.sp,
-            letterSpacing = 0.6.sp,
-          ),
-      )
-      StatusBadgePill(
-        text = overallLabel,
-        color = overallColor,
-        tag = "suit_status_pill",
-      )
-    }
-
-    Box(modifier = Modifier.fillMaxWidth().height(0.5.dp).background(IosGlassHairline))
-
-    Row(
-      modifier = Modifier.fillMaxWidth().weight(1f),
-      horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-      DashboardMetricCard(
-        label = "SUIT PRESSURE",
-        value = pressureText,
-        inference = if (pressureOk) "SEAL OK" else "CHECK SEAL",
-        accentColor = if (pressureOk) IosSfGreen else IosSfRed,
-        modifier = Modifier.weight(1f).fillMaxHeight(),
-      )
-      DashboardMetricCard(
-        label = "O\u2082 RESERVE",
-        value = o2Text,
-        inference = if (o2Low) "LOW" else "NOMINAL",
-        accentColor = if (o2Low) IosSfRed else IosSfBlue,
-        modifier = Modifier.weight(1f).fillMaxHeight(),
-      )
-      DashboardMetricCard(
-        label = "POWER",
-        value = pwrText,
-        inference = if (isLowPower) "RESERVE" else "NOMINAL",
-        accentColor = if (isLowPower) IosSfRed else IosSfGreen,
-        modifier = Modifier.weight(1f).fillMaxHeight(),
-      )
-    }
-
-    Row(
-      modifier = Modifier.fillMaxWidth().weight(1f),
-      horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-      DashboardMetricCard(
-        label = "RADIATION",
-        value = radText,
-        inference = if (radElevated) "ELEVATED" else "SAFE",
-        accentColor = if (uiState.radiationMSv >= 1.0f) IosSfRed else IosSfAmber,
-        modifier = Modifier.weight(1f).fillMaxHeight(),
-      )
-      DashboardMetricCard(
-        label = "ppCO\u2082",
-        value = co2Text,
-        inference = if (co2Elevated) "HIGH" else "SCRUB OK",
-        accentColor =
-          when {
-            uiState.ppCo2MmHg >= 6.0f -> IosSfRed
-            co2Elevated -> IosSfAmber
-            else -> IosSfGreen
-          },
-        modifier = Modifier.weight(1f).fillMaxHeight(),
-      )
-      DashboardMetricCard(
-        label = "WIND",
-        value = windText,
-        inference =
-          when {
-            uiState.windSpeedMps >= 18f -> "GALE"
-            uiState.windSpeedMps >= 10f -> "GUSTS"
-            else -> "CALM"
-          },
-        accentColor = if (uiState.windSpeedMps >= 15f) IosSfAmber else IosLabelPrimary,
-        modifier = Modifier.weight(1f).fillMaxHeight(),
-      )
-      DashboardMetricCard(
-        label = "EVA TIME",
-        value = evaFormatted,
-        inference = "ACTIVE",
-        accentColor = IosLabelPrimary,
-        modifier = Modifier.weight(1f).fillMaxHeight(),
-      )
-    }
-  }
-}
-
-@Composable
-private fun CognitiveDashboardPage(mentalState: MentalState) {
-  val (stressLabel, stressColor) =
-    when (mentalState.stressLevel) {
-      StressLevel.LOW -> "LOW" to IosSfGreen
-      StressLevel.MODERATE -> "MODERATE" to IosSfAmber
-      StressLevel.HIGH -> "HIGH" to IosSfAmber
-      StressLevel.CRITICAL -> "CRITICAL" to IosSfRed
-      StressLevel.UNKNOWN -> "SENSOR LOSS" to IosLabelSecondary
-    }
-  val stressValueText =
-    if (mentalState.stressLevel == StressLevel.UNKNOWN) "--" else "${mentalState.stressPercent}%"
-  val stressProgress =
-    if (mentalState.stressLevel == StressLevel.UNKNOWN) 0f
-    else (mentalState.stressPercent / 100f).coerceIn(0.05f, 1f)
-  val hrText = mentalState.heartRate?.let { "${it.roundToInt()} BPM" } ?: "--"
-
-  val sleep = mentalState.sleepTracker
-  val sleepDurationText = String.format(Locale.US, "%.1fh", sleep.durationHours)
-  val sleepStagesText = "DEEP ${sleep.deepMinutes}m · REM ${sleep.remMinutes}m"
-  val sleepAccent =
-    when (sleep.sleepStatus) {
-      "DEPRIVED" -> IosSfRed
-      "FATIGUED" -> IosSfAmber
-      else -> IosSfIndigo
-    }
-
-  val cardShape = RoundedCornerShape(18.dp)
-
-  Column(
-    modifier =
-      Modifier.fillMaxSize()
-        .padding(horizontal = 20.dp, vertical = 14.dp)
-        .testTag("dashboard_page_cognitive"),
-    verticalArrangement = Arrangement.spacedBy(10.dp),
-  ) {
-    Row(
-      modifier = Modifier.fillMaxWidth(),
-      horizontalArrangement = Arrangement.SpaceBetween,
-      verticalAlignment = Alignment.CenterVertically,
-    ) {
-      Text(
-        text = "COGNITIVE",
-        style =
-          TextStyle(
-            color = IosLabelPrimary,
-            fontFamily = FontFamily.SansSerif,
-            fontWeight = FontWeight.SemiBold,
-            fontSize = 15.sp,
-            letterSpacing = 0.6.sp,
-          ),
-      )
-      StatusBadgePill(
-        text = stressLabel,
-        color = stressColor,
-        tag = "cognitive_status_pill",
-      )
-    }
-
-    Box(modifier = Modifier.fillMaxWidth().height(0.5.dp).background(IosGlassHairline))
-
-    Row(
-      modifier = Modifier.fillMaxWidth().weight(1f),
-      horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-      Column(
-        modifier =
-          Modifier.weight(1.08f)
-            .fillMaxHeight()
-            .testTag("cognitive_stress_card")
-            .clip(cardShape)
-            .background(ObsidianBlack.copy(alpha = 0.24f))
-            .border(width = 0.6.dp, color = SpecularWhite.copy(alpha = 0.18f), shape = cardShape)
-            .padding(horizontal = 13.dp, vertical = 11.dp),
-        verticalArrangement = Arrangement.SpaceBetween,
+            .size(tileW, tileH)
+            .testTag("spatial_tile_${page.name.lowercase()}")
+            .graphicsLayer {
+              val s = proj.scale * (0.86f + 0.14f * reveal)
+              scaleX = s
+              scaleY = s
+              rotationY = proj.rotationY
+              rotationX = proj.rotationX
+              alpha = proj.alpha * reveal * (if (focused) 1f else 0.82f)
+              cameraDistance = 16f * density.density
+            },
       ) {
-        Text(
-          text = "STRESS LEVEL",
-          style =
-            TextStyle(
-              color = IosLabelSecondary,
-              fontFamily = FontFamily.SansSerif,
-              fontWeight = FontWeight.Medium,
-              fontSize = 9.sp,
-              letterSpacing = 0.5.sp,
-            ),
-        )
-        Text(
-          text = stressValueText,
-          style =
-            TextStyle(
-              color = stressColor,
-              fontFamily = FontFamily.SansSerif,
-              fontWeight = FontWeight.SemiBold,
-              fontSize = 28.sp,
-              fontFeatureSettings = "tnum",
-            ),
-          modifier = Modifier.testTag("cognitive_stress_text"),
-        )
-        Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-          Box(
-            modifier =
-              Modifier.fillMaxWidth()
-                .height(6.dp)
-                .clip(CircleShape)
-                .background(SpecularWhite.copy(alpha = 0.14f))
-                .testTag("cognitive_stress_bar"),
-          ) {
-            Box(
-              modifier =
-                Modifier.fillMaxWidth(stressProgress)
-                  .fillMaxHeight()
-                  .clip(CircleShape)
-                  .background(stressColor),
-            )
-          }
-          Text(
-            text = mentalState.stressDriver,
-            style =
-              TextStyle(
-                color = IosLabelSecondary,
-                fontFamily = FontFamily.SansSerif,
-                fontWeight = FontWeight.Medium,
-                fontSize = 9.sp,
-                letterSpacing = 0.4.sp,
-              ),
-            modifier = Modifier.testTag("cognitive_stress_driver_text"),
-          )
-        }
-      }
-
-      Column(
-        modifier =
-          Modifier.weight(0.92f)
-            .fillMaxHeight()
-            .testTag("cognitive_hr_card")
-            .clip(cardShape)
-            .background(ObsidianBlack.copy(alpha = 0.24f))
-            .border(width = 0.6.dp, color = SpecularWhite.copy(alpha = 0.18f), shape = cardShape)
-            .padding(horizontal = 13.dp, vertical = 11.dp),
-        verticalArrangement = Arrangement.SpaceBetween,
-      ) {
-        Text(
-          text = "HEART RATE",
-          style =
-            TextStyle(
-              color = IosLabelSecondary,
-              fontFamily = FontFamily.SansSerif,
-              fontWeight = FontWeight.Medium,
-              fontSize = 9.sp,
-              letterSpacing = 0.5.sp,
-            ),
-        )
-        Text(
-          text = hrText,
-          style =
-            TextStyle(
-              color = if (mentalState.heartRate != null) IosSfPink else IosLabelSecondary,
-              fontFamily = FontFamily.SansSerif,
-              fontWeight = FontWeight.SemiBold,
-              fontSize = 22.sp,
-              fontFeatureSettings = "tnum",
-            ),
-          modifier = Modifier.testTag("cognitive_hr_text"),
-        )
-        Text(
-          text = if (mentalState.heartRate != null) "VITALS SYNC" else "SIGNAL LOST",
-          style =
-            TextStyle(
-              color = IosLabelSecondary,
-              fontFamily = FontFamily.SansSerif,
-              fontWeight = FontWeight.Medium,
-              fontSize = 9.sp,
-              letterSpacing = 0.4.sp,
-            ),
-        )
-      }
-
-      Column(
-        modifier =
-          Modifier.weight(1.12f)
-            .fillMaxHeight()
-            .testTag("cognitive_sleep_card")
-            .clip(cardShape)
-            .background(ObsidianBlack.copy(alpha = 0.24f))
-            .border(width = 0.6.dp, color = SpecularWhite.copy(alpha = 0.18f), shape = cardShape)
-            .padding(horizontal = 13.dp, vertical = 11.dp),
-        verticalArrangement = Arrangement.SpaceBetween,
-      ) {
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.SpaceBetween,
-          verticalAlignment = Alignment.CenterVertically,
-        ) {
-          Text(
-            text = "SLEEP TRACKER",
-            style =
-              TextStyle(
-                color = IosLabelSecondary,
-                fontFamily = FontFamily.SansSerif,
-                fontWeight = FontWeight.Medium,
-                fontSize = 9.sp,
-                letterSpacing = 0.5.sp,
-              ),
-          )
-          Text(
-            text = "${sleep.qualityPercent}%",
-            style =
-              TextStyle(
-                color = sleepAccent,
-                fontFamily = FontFamily.SansSerif,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 10.sp,
-                fontFeatureSettings = "tnum",
-              ),
-          )
-        }
-        Text(
-          text = sleepDurationText,
-          style =
-            TextStyle(
-              color = IosLabelPrimary,
-              fontFamily = FontFamily.SansSerif,
-              fontWeight = FontWeight.SemiBold,
-              fontSize = 26.sp,
-              fontFeatureSettings = "tnum",
-            ),
-          modifier = Modifier.testTag("cognitive_sleep_text"),
-        )
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-          Text(
-            text = sleepStagesText,
-            style =
-              TextStyle(
-                color = IosLabelSecondary,
-                fontFamily = FontFamily.SansSerif,
-                fontWeight = FontWeight.Medium,
-                fontSize = 8.5.sp,
-                fontFeatureSettings = "tnum",
-              ),
-          )
-          Text(
-            text = sleep.sleepStatus,
-            style =
-              TextStyle(
-                color = sleepAccent,
-                fontFamily = FontFamily.SansSerif,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 9.sp,
-                letterSpacing = 0.4.sp,
-              ),
-            modifier = Modifier.testTag("cognitive_sleep_status_text"),
-          )
+        when (page) {
+          DashboardPage.MENTAL -> MentalTile(uiState, eyePreview, eyeOverlay)
+          DashboardPage.VITALS -> VitalsTile(uiState)
+          DashboardPage.RADIATION -> RadiationTile(uiState)
+          DashboardPage.MAP -> MapTile(uiState, onRequestLocationPermission)
+          DashboardPage.DRILLS -> DrillsTile(uiState.activeDrill)
         }
       }
     }
-  }
-}
 
-@Composable
-private fun DrillsDashboardPage(activeDrill: EmergencyDrill) {
-  val drills = EmergencyDrill.activeDrills
-  val pillColor =
-    when {
-      activeDrill == EmergencyDrill.NONE -> IosLabelSecondary
-      activeDrill.isCritical -> IosSfRed
-      else -> IosSfAmber
-    }
-  val pillLabel =
-    if (activeDrill == EmergencyDrill.NONE) "STANDBY" else "${activeDrill.code} ACTIVE"
+    RingIndicator(uiState.currentPage, Modifier.align(Alignment.BottomCenter).padding(bottom = 58.dp).testTag("dashboard_page_indicator"))
 
-  Column(
-    modifier =
-      Modifier.fillMaxSize()
-        .padding(horizontal = 18.dp, vertical = 12.dp)
-        .testTag("dashboard_page_drills"),
-    verticalArrangement = Arrangement.spacedBy(7.dp),
-  ) {
-    Row(
-      modifier = Modifier.fillMaxWidth(),
-      horizontalArrangement = Arrangement.SpaceBetween,
-      verticalAlignment = Alignment.CenterVertically,
-    ) {
-      Row(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-      ) {
-        Text(
-          text = "DRILLS",
-          style =
-            TextStyle(
-              color = IosLabelPrimary,
-              fontFamily = FontFamily.SansSerif,
-              fontWeight = FontWeight.SemiBold,
-              fontSize = 15.sp,
-              letterSpacing = 0.6.sp,
-            ),
-        )
-        Text(
-          text = "VOICE: EMERGENCY 1-10",
-          style =
-            TextStyle(
-              color = IosLabelSecondary,
-              fontFamily = FontFamily.SansSerif,
-              fontWeight = FontWeight.Medium,
-              fontSize = 8.5.sp,
-              letterSpacing = 0.4.sp,
-            ),
-        )
-      }
-      StatusBadgePill(
-        text = pillLabel,
-        color = pillColor,
-        tag = "drills_status_pill",
-      )
-    }
-
-    Box(modifier = Modifier.fillMaxWidth().height(0.5.dp).background(IosGlassHairline))
-
-    Column(
-      modifier = Modifier.fillMaxWidth().weight(1f),
-      verticalArrangement = Arrangement.spacedBy(5.dp),
-    ) {
-      val rowCount = (drills.size + 1) / 2
-      for (rowIdx in 0 until rowCount) {
-        val leftDrill = drills[rowIdx]
-        val rightIdx = rowIdx + rowCount
-        val rightDrill = if (rightIdx < drills.size) drills[rightIdx] else null
-        Row(
-          modifier = Modifier.fillMaxWidth().weight(1f),
-          horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-          DrillSlotCard(
-            drill = leftDrill,
-            isActive = activeDrill == leftDrill,
-            modifier = Modifier.weight(1f).fillMaxHeight(),
-          )
-          if (rightDrill != null) {
-            DrillSlotCard(
-              drill = rightDrill,
-              isActive = activeDrill == rightDrill,
-              modifier = Modifier.weight(1f).fillMaxHeight(),
-            )
-          }
-        }
-      }
-    }
-  }
-}
-
-@Composable
-private fun DrillSlotCard(
-  drill: EmergencyDrill,
-  isActive: Boolean,
-  modifier: Modifier = Modifier,
-) {
-  val cardShape = RoundedCornerShape(12.dp)
-  val accentColor =
-    when {
-      isActive && drill.isCritical -> IosSfRed
-      isActive -> IosSfAmber
-      else -> SpecularWhite.copy(alpha = 0.70f)
-    }
-  val bgColor =
-    if (isActive) {
-      accentColor.copy(alpha = 0.22f)
-    } else {
-      ObsidianBlack.copy(alpha = 0.24f)
-    }
-  val borderColor =
-    if (isActive) {
-      accentColor.copy(alpha = 0.85f)
-    } else {
-      SpecularWhite.copy(alpha = 0.16f)
-    }
-
-  Row(
-    modifier =
-      modifier
-        .testTag("drill_item_${drill.number}")
-        .clip(cardShape)
-        .background(bgColor)
-        .border(width = if (isActive) 1.dp else 0.55.dp, color = borderColor, shape = cardShape)
-        .padding(horizontal = 9.dp, vertical = 4.dp),
-    verticalAlignment = Alignment.CenterVertically,
-    horizontalArrangement = Arrangement.SpaceBetween,
-  ) {
-    Row(
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.spacedBy(6.dp),
-      modifier = Modifier.weight(1f),
-    ) {
-      Text(
-        text = "E${drill.number}",
-        style =
-          TextStyle(
-            color = if (isActive) accentColor else IosSfBlue,
-            fontFamily = FontFamily.SansSerif,
-            fontWeight = FontWeight.Bold,
-            fontSize = 10.sp,
-            fontFeatureSettings = "tnum",
-          ),
-      )
-      Text(
-        text = drill.title,
-        maxLines = 1,
-        style =
-          TextStyle(
-            color = IosLabelPrimary,
-            fontFamily = FontFamily.SansSerif,
-            fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Medium,
-            fontSize = 10.sp,
-          ),
-      )
-    }
-    Text(
-      text = drill.impactSummary,
-      maxLines = 1,
-      style =
-        TextStyle(
-          color = if (isActive) accentColor else IosLabelSecondary,
-          fontFamily = FontFamily.SansSerif,
-          fontWeight = FontWeight.Medium,
-          fontSize = 8.5.sp,
-          fontFeatureSettings = "tnum",
-        ),
-    )
-  }
-}
-
-@Composable
-private fun MarsMapMeterDashboardPage(
-  uiState: HudUiState,
-  onRequestLocationPermission: () -> Unit,
-) {
-  val safeGoal = uiState.distanceGoalMeters.coerceAtLeast(100f)
-  val safeDistance = uiState.distanceMeters.coerceAtLeast(0f)
-  val rawProgress = (safeDistance / safeGoal).coerceIn(0f, 1f)
-  val animatedProgress by
-    animateFloatAsState(
-      targetValue = rawProgress,
-      animationSpec = tween(durationMillis = 450, easing = FastOutSlowInEasing),
-      label = "distance_ring_progress",
-    )
-
-  val (distanceValueText, distanceUnitText) =
-    if (safeDistance >= 1000f) {
-      String.format(Locale.US, "%.2f", safeDistance / 1000f) to "KM"
-    } else {
-      "${safeDistance.roundToInt()}" to "METERS"
-    }
-  val goalText = String.format(Locale.US, "%.1f km", safeGoal / 1000f)
-  val speedFormatted = String.format(Locale.US, "%.1f m/s", uiState.speedMps.coerceAtLeast(0f))
-
-  Column(
-    modifier =
-      Modifier.fillMaxSize()
-        .padding(horizontal = 16.dp, vertical = 12.dp)
-        .testTag("dashboard_page_meter"),
-    verticalArrangement = Arrangement.spacedBy(10.dp),
-  ) {
-    MarsMolaMapCanvas(
-      trackPoints = uiState.marsTrackPoints,
-      headingDegrees = uiState.headingDegrees,
-      hasGpsFix = uiState.hasGpsFix,
-      mapZoom = uiState.mapZoom,
-      mapTiltDegrees = uiState.mapTiltDegrees,
-      mapPanEastDeg = uiState.mapPanEastDeg,
-      mapPanNorthDeg = uiState.mapPanNorthDeg,
-      isMapPinching = uiState.isMapPinching,
-      modifier = Modifier.fillMaxWidth().weight(1f),
-    )
-
-    Row(
-      modifier =
-        Modifier.fillMaxWidth()
-          .clip(RoundedCornerShape(18.dp))
-          .background(ObsidianBlack.copy(alpha = 0.28f))
-          .border(width = 0.6.dp, color = SpecularWhite.copy(alpha = 0.20f), shape = RoundedCornerShape(18.dp))
-          .padding(horizontal = 14.dp, vertical = 8.dp),
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-      Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-      ) {
-        Canvas(modifier = Modifier.size(34.dp).testTag("dashboard_distance_ring")) {
-          val strokeWidth = 3.6.dp.toPx()
-          val inset = strokeWidth / 2f
-          val arcSize = Size(size.width - strokeWidth, size.height - strokeWidth)
-          val topLeft = Offset(inset, inset)
-
-          drawArc(
-            color = SpecularWhite.copy(alpha = 0.16f),
-            startAngle = 0f,
-            sweepAngle = 360f,
-            useCenter = false,
-            topLeft = topLeft,
-            size = arcSize,
-            style = Stroke(width = strokeWidth, cap = StrokeCap.Round),
-          )
-          if (animatedProgress > 0.004f) {
-            drawArc(
-              brush = Brush.linearGradient(colors = listOf(IosSfBlue, IosSfGreen)),
-              startAngle = -90f,
-              sweepAngle = 360f * animatedProgress,
-              useCenter = false,
-              topLeft = topLeft,
-              size = arcSize,
-              style = Stroke(width = strokeWidth, cap = StrokeCap.Round),
-            )
-          }
-        }
-
-        Column {
-          Text(
-            text = distanceValueText,
-            style =
-              TextStyle(
-                color = IosLabelPrimary,
-                fontFamily = FontFamily.SansSerif,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 18.sp,
-                fontFeatureSettings = "tnum",
-              ),
-            modifier = Modifier.testTag("dashboard_distance_text"),
-          )
-          Text(
-            text = distanceUnitText,
-            style =
-              TextStyle(
-                color = IosLabelSecondary,
-                fontFamily = FontFamily.SansSerif,
-                fontWeight = FontWeight.Medium,
-                fontSize = 8.sp,
-                letterSpacing = 0.5.sp,
-              ),
-            modifier = Modifier.testTag("dashboard_distance_unit_text"),
-          )
-        }
-      }
-
-      Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-          text = "SPEED",
-          style =
-            TextStyle(
-              color = IosLabelSecondary,
-              fontFamily = FontFamily.SansSerif,
-              fontWeight = FontWeight.Medium,
-              fontSize = 7.5.sp,
-              letterSpacing = 0.4.sp,
-            ),
-        )
-        Text(
-          text = speedFormatted,
-          style =
-            TextStyle(
-              color = IosSfBlue,
-              fontFamily = FontFamily.SansSerif,
-              fontWeight = FontWeight.SemiBold,
-              fontSize = 12.sp,
-              fontFeatureSettings = "tnum",
-            ),
-          modifier = Modifier.testTag("dashboard_speed_text"),
-        )
-      }
-
-      Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-          text = "GOAL",
-          style =
-            TextStyle(
-              color = IosLabelSecondary,
-              fontFamily = FontFamily.SansSerif,
-              fontWeight = FontWeight.Medium,
-              fontSize = 7.5.sp,
-              letterSpacing = 0.4.sp,
-            ),
-        )
-        Text(
-          text = goalText,
-          style =
-            TextStyle(
-              color = IosLabelPrimary,
-              fontFamily = FontFamily.SansSerif,
-              fontWeight = FontWeight.SemiBold,
-              fontSize = 12.sp,
-              fontFeatureSettings = "tnum",
-            ),
-        )
-      }
-
-      if (!uiState.hasLocationPermission) {
-        val pillShape = RoundedCornerShape(50)
-        Box(
-          modifier =
-            Modifier.testTag("location_permission_pill")
-              .minimumInteractiveComponentSize()
-              .clip(pillShape)
-              .background(IosSfBlue.copy(alpha = 0.18f))
-              .border(width = 0.75.dp, color = IosSfBlue.copy(alpha = 0.65f), shape = pillShape)
-              .clickable(onClick = onRequestLocationPermission)
-              .padding(horizontal = 12.dp, vertical = 6.dp),
-          contentAlignment = Alignment.Center,
-        ) {
-          Text(
-            text = "Enable GPS",
-            style =
-              TextStyle(
-                color = IosSfBlue,
-                fontFamily = FontFamily.SansSerif,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 11.sp,
-              ),
-          )
-        }
-      } else {
-        StatusBadgePill(
-          text = if (uiState.hasGpsFix) "GPS LOCK" else "ACQUIRING",
-          color = if (uiState.hasGpsFix) IosSfGreen else IosSfAmber,
-          tag = "gps_status_pill",
-        )
-      }
-    }
-  }
-}
-
-@Composable
-private fun DashboardMetricCard(
-  label: String,
-  value: String,
-  inference: String,
-  accentColor: Color,
-  modifier: Modifier = Modifier,
-) {
-  val shape = RoundedCornerShape(18.dp)
-  Column(
-    modifier =
-      modifier
-        .clip(shape)
-        .background(ObsidianBlack.copy(alpha = 0.24f))
-        .border(width = 0.6.dp, color = SpecularWhite.copy(alpha = 0.18f), shape = shape)
-        .padding(horizontal = 12.dp, vertical = 9.dp),
-    verticalArrangement = Arrangement.SpaceBetween,
-  ) {
-    Text(
-      text = label,
-      style =
-        TextStyle(
-          color = IosLabelSecondary,
-          fontFamily = FontFamily.SansSerif,
-          fontWeight = FontWeight.Medium,
-          fontSize = 8.5.sp,
-          letterSpacing = 0.4.sp,
-        ),
-    )
-    Text(
-      text = value,
-      style =
-        TextStyle(
-          color = accentColor,
-          fontFamily = FontFamily.SansSerif,
-          fontWeight = FontWeight.SemiBold,
-          fontSize = 15.sp,
-          fontFeatureSettings = "tnum",
-        ),
-    )
-    Text(
-      text = inference,
-      style =
-        TextStyle(
-          color = IosLabelSecondary,
-          fontFamily = FontFamily.SansSerif,
-          fontWeight = FontWeight.Medium,
-          fontSize = 8.5.sp,
-          letterSpacing = 0.4.sp,
-        ),
-    )
-  }
-}
-
-@Composable
-private fun StatusBadgePill(
-  text: String,
-  color: Color,
-  tag: String,
-) {
-  val pillShape = RoundedCornerShape(50)
-  Box(
-    modifier =
-      Modifier.testTag(tag)
-        .semantics(mergeDescendants = true) {}
-        .clip(pillShape)
-        .background(color.copy(alpha = 0.18f))
-        .border(width = 0.75.dp, color = color.copy(alpha = 0.65f), shape = pillShape)
-        .padding(horizontal = 10.dp, vertical = 4.dp),
-    contentAlignment = Alignment.Center,
-  ) {
-    Text(
-      text = text,
-      style =
-        TextStyle(
-          color = color,
-          fontFamily = FontFamily.SansSerif,
-          fontWeight = FontWeight.SemiBold,
-          fontSize = 10.sp,
-          letterSpacing = 0.4.sp,
-        ),
-    )
-  }
-}
-
-@Composable
-private fun DashboardPageDots(
-  pageCount: Int,
-  currentIndex: Int,
-  modifier: Modifier = Modifier,
-) {
-  Row(
-    modifier = modifier.testTag("dashboard_page_indicator"),
-    horizontalArrangement = Arrangement.spacedBy(8.dp),
-    verticalAlignment = Alignment.CenterVertically,
-  ) {
-    repeat(pageCount) { index ->
-      val selected = index == currentIndex
-      val dotWidth by
-        animateDpAsState(
-          targetValue = if (selected) 16.dp else 6.dp,
-          animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
-          label = "dot_width_$index",
-        )
-      val dotAlpha by
-        animateFloatAsState(
-          targetValue = if (selected) 0.94f else 0.30f,
-          animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
-          label = "dot_alpha_$index",
-        )
+    if (cue.value > 0.01f && uiState.lastSwipeDirection != null) {
+      val left = uiState.lastSwipeDirection == SwipeDirection.PREVIOUS
       Box(
-        modifier =
-          Modifier.size(width = dotWidth, height = 6.dp)
-            .clip(CircleShape)
-            .background(SpecularWhite.copy(alpha = dotAlpha))
+        Modifier.align(if (left) Alignment.CenterStart else Alignment.CenterEnd)
+          .width(40.dp)
+          .fillMaxHeight()
+          .testTag("swipe_edge_cue")
+          .background(
+            Brush.horizontalGradient(
+              if (left) listOf(IosSfBlue.copy(alpha = 0.36f * cue.value), Color.Transparent)
+              else listOf(Color.Transparent, IosSfBlue.copy(alpha = 0.36f * cue.value))
+            )
+          )
       )
     }
   }
 }
 
+/** MENTAL -> VITALS -> RADIATION -> MAP (loop), with DRILLS shown as the "look down" dot. */
 @Composable
-private fun ZeroTextPermissionAperture(
-  onRequestPermission: () -> Unit,
-  modifier: Modifier = Modifier,
-) {
+private fun RingIndicator(current: DashboardPage, modifier: Modifier) {
+  Row(modifier, horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+    DashboardPage.ring.forEach { page ->
+      val selected = page == current
+      val w by animateFloatAsState(if (selected) 18f else 6f, tween(200), label = "ring_dot_${page.name}")
+      Box(Modifier.size(w.dp, 6.dp).clip(CircleShape).background(SpecularWhite.copy(alpha = if (selected) 0.94f else 0.32f)))
+    }
+    Text("↺", style = hudText(9.sp, IosLabelSecondary))
+    Box(
+      Modifier.size(6.dp)
+        .clip(CircleShape)
+        .background(if (current == DashboardPage.DRILLS) IosSfAmber else SpecularWhite.copy(alpha = 0.18f))
+    )
+  }
+}
+
+// ------------------------------------------------------------------ Alerts & controls
+
+@Composable
+private fun AlertBanner(uiState: HudUiState) {
+  val cog = uiState.cognitive
+  val rad = uiState.radiation
+  val (text, color) =
+    when {
+      cog.level == CognitiveLevel.EMERGENCY ->
+        "EMERGENCY · LOAD ${cog.index} · PULSE ${if (uiState.isBiometricSensorLost) "--" else uiState.heartRateBpm} · " +
+          (if (uiState.alertAcknowledged) "ACKNOWLEDGED" else "THUMB UP TO ACK") to IosSfRed
+      cog.level == CognitiveLevel.WARNING -> "WARNING · LOAD ${cog.index} · ${cog.topDriver}" to levelColor(cog.level)
+      rad.status == RadiationStatus.STORM -> "SOLAR PARTICLE EVENT · SEEK SHELTER" to IosSfRed
+      cog.level == CognitiveLevel.CAUTION -> "CAUTION · LOAD ${cog.index} · ${cog.topDriver}" to IosSfAmber
+      uiState.activeDrill != EmergencyDrill.NONE -> "DRILL ${uiState.activeDrill.code} · ${uiState.activeDrill.title.uppercase()}" to IosSfAmber
+      else -> null to IosSfGreen
+    }
+  if (text == null) return
+  val pulse by
+    rememberInfiniteTransition(label = "alert_pulse")
+      .animateFloat(0.55f, 1f, infiniteRepeatable(tween(520), RepeatMode.Reverse), label = "alert_pulse_a")
+  val emergency = cog.level == CognitiveLevel.EMERGENCY && !uiState.alertAcknowledged
+  val shape = RoundedCornerShape(50)
+  Box(
+    Modifier.padding(top = 4.dp)
+      .testTag("alert_banner")
+      .semantics(mergeDescendants = true) {}
+      .clip(shape)
+      .background(color.copy(alpha = if (emergency) 0.34f * pulse else 0.20f))
+      .border(1.dp, color.copy(alpha = if (emergency) pulse else 0.7f), shape)
+      .padding(horizontal = 14.dp, vertical = 4.dp)
+  ) {
+    Text(text, style = hudText(10.sp, if (emergency) IosLabelPrimary else color), maxLines = 1)
+  }
+}
+
+@Composable
+private fun GestureChip(uiState: HudUiState) {
+  val g = uiState.gesture
+  val flash = remember { Animatable(0f) }
+  LaunchedEffect(g.lastActionId) {
+    if (g.lastActionId > 0) {
+      flash.snapTo(1f)
+      flash.animateTo(0f, tween(900))
+    }
+  }
+  val showPending = g.pendingAction != null && g.holdProgress > 0.02f
+  val showFlash = flash.value > 0.02f && g.lastAction != null
+  val showPose = g.activePose != HandPose.NONE
+  if (!showPending && !showFlash && !showPose) return
+  val shape = RoundedCornerShape(50)
+  Row(
+    Modifier.testTag("gesture_chip")
+      .clip(shape)
+      .background(ObsidianBlack.copy(alpha = 0.45f))
+      .border(0.7.dp, SpecularWhite.copy(alpha = 0.30f), shape)
+      .padding(horizontal = 10.dp, vertical = 4.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Box(Modifier.size(16.dp), contentAlignment = Alignment.Center) {
+      Canvas(Modifier.fillMaxSize()) {
+        val sw = 2.dp.toPx()
+        val arc = Size(size.width - sw, size.height - sw)
+        drawArc(SpecularWhite.copy(alpha = 0.2f), 0f, 360f, false, Offset(sw / 2, sw / 2), arc, style = Stroke(sw))
+        val p = if (showFlash && !showPending) 1f else g.holdProgress
+        drawArc(if (showFlash && !showPending) IosSfGreen else IosSfBlue, -90f, 360f * p, false, Offset(sw / 2, sw / 2), arc, style = Stroke(sw, cap = StrokeCap.Round))
+      }
+    }
+    Spacer(Modifier.width(6.dp))
+    val label =
+      when {
+        showPending -> "${g.activePose.label} → ${g.pendingAction?.label}"
+        showFlash -> "✓ ${g.lastAction?.label}"
+        else -> g.activePose.label
+      }
+    Text(label, style = hudText(9.sp, if (showFlash && !showPending) IosSfGreen else IosLabelPrimary))
+  }
+}
+
+@Composable
+private fun MicMeter(uiState: HudUiState) {
+  val mic = uiState.mic
+  val norm = { db: Float -> ((db + 80f) / 70f).coerceIn(0f, 1f) }
+  Row(Modifier.testTag("mic_meter"), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+    Text(if (mic.calibrating) "MIC CAL" else "MIC S${mic.sensitivity}", style = hudText(7.sp, IosLabelSecondary, FontWeight.Medium))
+    Box(Modifier.width(70.dp).height(4.dp).clip(CircleShape).background(SpecularWhite.copy(alpha = 0.14f))) {
+      Box(
+        Modifier.fillMaxWidth(norm(mic.levelDb).coerceAtLeast(0.02f))
+          .height(4.dp)
+          .clip(CircleShape)
+          .background(if (mic.speaking) IosSfGreen else SpecularWhite.copy(alpha = 0.55f))
+      )
+      Box(Modifier.offset(x = 70.dp * norm(mic.gateDb)).width(1.5.dp).height(4.dp).background(IosSfAmber))
+    }
+    if (mic.lastHeard.isNotEmpty()) Text("\"${mic.lastHeard}\"", style = hudText(7.sp, IosLabelSecondary, FontWeight.Medium), maxLines = 1)
+  }
+}
+
+@Composable
+private fun ZeroTextPermissionAperture(onRequestPermission: () -> Unit, modifier: Modifier = Modifier) {
   Box(
     modifier =
       modifier
         .background(ObsidianBlack)
         .testTag("permission_trigger_area")
-        .clickable(
-          interactionSource = remember { MutableInteractionSource() },
-          indication = null,
-          onClick = onRequestPermission,
-        ),
+        .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onRequestPermission),
     contentAlignment = Alignment.Center,
   ) {
     Canvas(modifier = Modifier.size(64.dp)) {
       val outerStroke = 2.dp.toPx()
-      drawCircle(
-        color = SpecularWhite.copy(alpha = 0.34f),
-        radius = size.minDimension / 2f - outerStroke,
-        style = Stroke(width = outerStroke),
-      )
-      drawCircle(
-        color = SpecularWhite.copy(alpha = 0.22f),
-        radius = size.minDimension * 0.22f,
-      )
+      drawCircle(SpecularWhite.copy(alpha = 0.34f), size.minDimension / 2f - outerStroke, style = Stroke(outerStroke))
+      drawCircle(SpecularWhite.copy(alpha = 0.22f), size.minDimension * 0.22f)
     }
   }
 }
+
+private const val TAG = "SpatialHudScreen"

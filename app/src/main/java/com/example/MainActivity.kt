@@ -24,6 +24,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.alert.AlertAnnouncer
 import com.example.hud.HudEvent
 import com.example.hud.HudViewModel
 import com.example.hud.SpatialHudScreen
@@ -40,6 +41,7 @@ class MainActivity : ComponentActivity() {
   private lateinit var batteryStatusMonitor: BatteryStatusMonitor
   private lateinit var gpsDistanceMonitor: GpsDistanceMonitor
   private lateinit var voiceCommandRecognizer: VoiceCommandRecognizer
+  private lateinit var alertAnnouncer: AlertAnnouncer
 
   private var isPermissionPromptPending = false
   private var hasAttemptedLocationPrompt = false
@@ -77,7 +79,7 @@ class MainActivity : ComponentActivity() {
     configureImmersiveWindow()
     disableBackNavigation()
 
-    headingSensorMonitor = HeadingSensorMonitor(this, viewModel::onHeadingChanged)
+    headingSensorMonitor = HeadingSensorMonitor(this, viewModel::onHeadingChanged, viewModel::onPitchChanged)
     batteryStatusMonitor = BatteryStatusMonitor(this, viewModel::onBatteryPercentChanged)
     gpsDistanceMonitor =
       GpsDistanceMonitor(
@@ -86,7 +88,8 @@ class MainActivity : ComponentActivity() {
         onFixStatusChanged = viewModel::onGpsFixStatusChanged,
         onVectorDelta = viewModel::onGpsVectorDelta,
       )
-    voiceCommandRecognizer = VoiceCommandRecognizer(this, viewModel::onVoiceCommand)
+    voiceCommandRecognizer = VoiceCommandRecognizer(this, viewModel::onVoiceCommand, viewModel::onMicStatus)
+    alertAnnouncer = AlertAnnouncer(this) { speaking -> voiceCommandRecognizer.setMuted(speaking) }
 
     val hasCamera = hasPermission(Manifest.permission.CAMERA)
     val hasLocation = hasLocationPermission()
@@ -119,6 +122,9 @@ class MainActivity : ComponentActivity() {
           viewModel.events.collect { event ->
             when (event) {
               HudEvent.ExitApp -> exitLockedHud()
+              is HudEvent.Speak -> alertAnnouncer.speak(event.text)
+              HudEvent.StopSpeaking -> alertAnnouncer.stop()
+              HudEvent.RecalibrateMic -> voiceCommandRecognizer.recalibrate()
             }
           }
         }
@@ -135,6 +141,8 @@ class MainActivity : ComponentActivity() {
           onRequestLocationPermission = { requestLocationOrOpenSettings() },
           onHandsDetected = viewModel::onHandsDetected,
           onInvisibleCornerTap = { viewModel.onInvisibleExitZoneTap() },
+          onEyeSample = viewModel::onEyeSample,
+          onEyeTrackingStatus = viewModel::onEyeTrackingStatus,
         )
       }
     }
@@ -284,7 +292,13 @@ class MainActivity : ComponentActivity() {
     }
   }
 
+  override fun onDestroy() {
+    alertAnnouncer.shutdown()
+    super.onDestroy()
+  }
+
   private fun exitLockedHud() {
+    alertAnnouncer.stop()
     voiceCommandRecognizer.stop()
     gpsDistanceMonitor.stop()
     try {

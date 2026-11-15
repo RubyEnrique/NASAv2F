@@ -3,11 +3,22 @@ package com.example.hud
 import android.os.SystemClock
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.eye.BlinkAnalyzer
+import com.example.eye.EyeMetrics
+import com.example.eye.EyeSample
+import com.example.eye.EyeTrackingStatus
 import com.example.gesture.DashboardMode
 import com.example.gesture.DashboardPage
+import com.example.gesture.GestureAction
 import com.example.gesture.HandGestureClassifier
 import com.example.gesture.HandLandmarkPoint
+import com.example.gesture.HandObservation
+import com.example.gesture.HandPose
 import com.example.gesture.SwipeDirection
+import com.example.mental.CognitiveLevel
+import com.example.mental.CognitiveLoadInputs
+import com.example.mental.CognitiveLoadModel
+import com.example.mental.CognitiveLoadState
 import com.example.mental.EmergencyDrill
 import com.example.mental.MentalBand
 import com.example.mental.MentalScenario
@@ -15,7 +26,14 @@ import com.example.mental.MentalState
 import com.example.mental.MentalVitals
 import com.example.mental.SleepTrackerState
 import com.example.mental.StressLevel
+import com.example.radiation.RadiationModel
+import com.example.radiation.RadiationState
+import com.example.radiation.RadiationStatus
+import com.example.suit.SuitTelemetry
+import com.example.suit.SuitTelemetryModel
+import com.example.voice.MicStatus
 import com.example.voice.VoiceCommand
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -27,16 +45,25 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
+data class GestureFeedback(
+  val activePose: HandPose = HandPose.NONE,
+  val pendingAction: GestureAction? = null,
+  val holdProgress: Float = 0f,
+  val lastAction: GestureAction? = null,
+  val lastActionId: Long = 0L,
+)
+
 data class HudUiState(
   val hasCameraPermission: Boolean = false,
   val hasLocationPermission: Boolean = false,
   val hasGpsFix: Boolean = false,
   val headingDegrees: Float = 0f,
+  val pitchDegrees: Float = 0f,
   val batteryPercent: Int = 100,
   val distanceMeters: Float = 0f,
   val speedMps: Float = 0f,
   val distanceGoalMeters: Float = DEFAULT_DISTANCE_GOAL_METERS,
-  // Crew Vitals (Lower-Left + Inferred Vitals Page)
+  // 2. Vitals (crew biomedical, as sensed by the suit)
   val heartRateBpm: Int = BASE_HR_BPM.roundToInt(),
   val systolicBp: Int = BASE_SYSTOLIC_BP,
   val diastolicBp: Int = BASE_DIASTOLIC_BP,
@@ -45,64 +72,42 @@ data class HudUiState(
   val hydrationPercent: Int = 74,
   val hydrationLiters: Float = 1.4f,
   val isBiometricSensorLost: Boolean = false,
-  // Suit Systems (Lower-Right + Inferred Suit Status Page)
-  val suitPressurePsi: Float = 4.3f,
-  val oxygenPercent: Int = 88,
-  val oxygenHours: Float = 3.8f,
-  val suitPowerPercent: Int = 92,
-  val suitPowerHours: Float = 4.5f,
-  val ppCo2MmHg: Float = 1.8f,
-  val radiationMSv: Float = 0.24f,
+  val suit: SuitTelemetry = SuitTelemetry(),
+  // 3. Radiation & geographic protection
+  val radiation: RadiationState = RadiationState(),
   val windSpeedMps: Float = 6.4f,
   val evaSeconds: Int = INITIAL_EVA_SECONDS,
-  // Mars Map Traverse Track + Pinch Camera State
+  // 4. Visualization (map)
   val marsTrackPoints: List<MarsTrackPoint> = listOf(MarsTrackPoint(0f, 0f)),
   val mapZoom: Float = 1.0f,
   val mapTiltDegrees: Float = 0f,
   val mapPanEastDeg: Float = 0f,
   val mapPanNorthDeg: Float = 0f,
   val isMapPinching: Boolean = false,
-  // Cognitive (4th Page - Synced HR, Stress Level & Sleep Tracker)
-  val mentalState: MentalState =
-    MentalState(
-      heartRate = BASE_HR_BPM.toDouble(),
-      o2Use = 0.09,
-      helmetCo2MmHg = 1.8,
-      score = 96,
-      band = MentalBand.OK,
-      label = null,
-      askOk = false,
-      calibrated = true,
-      calibration = 1.0f,
-      needsWorkloadChange = false,
-      expectedHr = BASE_HR_BPM.toDouble(),
-      additionalHr = 0.0,
-      hrPenalty = 0,
-      co2Penalty = 0,
-      scenario = MentalScenario.BASELINE,
-      stressPercent = 12,
-      stressLevel = StressLevel.LOW,
-      stressDriver = "NOMINAL",
-      sleepTracker = SleepTrackerState(),
-    ),
-  // Emergency Drills (5th Page)
+  // 1. Mental health
+  val mentalState: MentalState = DEFAULT_MENTAL_STATE,
+  val cognitive: CognitiveLoadState = CognitiveLoadState(),
+  val eye: EyeMetrics = EyeMetrics(),
+  val eyeTrackingStatus: EyeTrackingStatus = EyeTrackingStatus.OFF,
+  val eyePreviewEnabled: Boolean = true,
+  val alertAcknowledged: Boolean = false,
+  // Drills
   val activeDrill: EmergencyDrill = EmergencyDrill.NONE,
-  // Gesture Controls
-  val palmHoldProgress: Float = 0f,
-  val isTwoFistsReady: Boolean = false,
+  // Controls
+  val mic: MicStatus = MicStatus(),
+  val gesture: GestureFeedback = GestureFeedback(),
   val dashboardMode: DashboardMode = DashboardMode.CLOSED,
-  val currentPage: DashboardPage = DashboardPage.MAP,
+  val currentPage: DashboardPage = DashboardPage.MENTAL,
+  val anchorYawDegrees: Float = 0f,
+  val anchorPitchDegrees: Float = 0f,
   val lastSwipeDirection: SwipeDirection? = null,
   val swipeCueId: Long = 0L,
 ) {
   val isDashboardOpen: Boolean
-    get() =
-      dashboardMode == DashboardMode.QUICK_HOLD ||
-        dashboardMode == DashboardMode.QUICK_VOICE ||
-        dashboardMode == DashboardMode.PERMANENT
+    get() = dashboardMode != DashboardMode.CLOSED
 
   val isSuitLowPower: Boolean
-    get() = suitPowerPercent < 20
+    get() = suit.isLowPower
 
   companion object {
     const val DEFAULT_DISTANCE_GOAL_METERS = 5000f
@@ -111,11 +116,40 @@ data class HudUiState(
     const val BASE_DIASTOLIC_BP = 76
     const val INITIAL_EVA_SECONDS = 3 * 60 + 42
     const val MAX_TRACK_POINTS = 200
+
+    val DEFAULT_MENTAL_STATE =
+      MentalState(
+        heartRate = BASE_HR_BPM.toDouble(),
+        o2Use = 0.09,
+        helmetCo2MmHg = 1.8,
+        score = 96,
+        band = MentalBand.OK,
+        label = null,
+        askOk = false,
+        calibrated = true,
+        calibration = 1.0f,
+        needsWorkloadChange = false,
+        expectedHr = BASE_HR_BPM.toDouble(),
+        additionalHr = 0.0,
+        hrPenalty = 0,
+        co2Penalty = 0,
+        scenario = MentalScenario.BASELINE,
+        stressPercent = 12,
+        stressLevel = StressLevel.LOW,
+        stressDriver = "NOMINAL",
+        sleepTracker = SleepTrackerState(),
+      )
   }
 }
 
 sealed interface HudEvent {
   data object ExitApp : HudEvent
+
+  data class Speak(val text: String) : HudEvent
+
+  data object StopSpeaking : HudEvent
+
+  data object RecalibrateMic : HudEvent
 }
 
 class HudViewModel(
@@ -126,12 +160,18 @@ class HudViewModel(
   private val _uiState = MutableStateFlow(HudUiState())
   val uiState: StateFlow<HudUiState> = _uiState.asStateFlow()
 
-  private val _events = MutableSharedFlow<HudEvent>(extraBufferCapacity = 4)
+  private val _events = MutableSharedFlow<HudEvent>(extraBufferCapacity = 8)
   val events: SharedFlow<HudEvent> = _events.asSharedFlow()
 
   private val gestureLock = Any()
   private val locationLock = Any()
+  private val eyeLock = Any()
+  private val modelLock = Any()
   private val mentalVitals = MentalVitals()
+  private val cognitiveModel = CognitiveLoadModel()
+  private val suitModel = SuitTelemetryModel()
+  private val radiationModel = RadiationModel()
+  private val blinkAnalyzer = BlinkAnalyzer()
   private val exitTapTimestampsMs = ArrayDeque<Long>()
 
   private var lastLocationSampleMs = 0L
@@ -139,10 +179,16 @@ class HudViewModel(
   private var smoothedSpeedMps = 0f
   private var averagedHrBpm = HudUiState.BASE_HR_BPM
   private var baseWindSpeedMps = 6.4f
-  private var baseRadiationMSv = 0.24f
   private var baseSpo2Percent = 98
   private var baseEvaSeconds = HudUiState.INITIAL_EVA_SECONDS
   private var lastEvalMs = 1_000L
+  private var lastEyePublishMs = 0L
+
+  // Alert scheduling
+  private var lastAlertLevel = CognitiveLevel.NOMINAL
+  private var lastEmergencySpokenMs: Long? = null
+  private var acknowledgedUntilMs = 0L
+  private var lastRadiationStatus = RadiationStatus.NOMINAL
 
   private fun safeElapsedRealtimeMs(): Long {
     val raw =
@@ -156,51 +202,50 @@ class HudViewModel(
     return next
   }
 
-  init {
-    _uiState.update { state -> applyTelemetrySnapshot(state, nowMs = 0L) }
+  private fun safeUptimeMs(): Long =
+    try {
+      SystemClock.uptimeMillis()
+    } catch (_: Throwable) {
+      0L
+    }
 
+  init {
+    _uiState.update { state -> applyTelemetrySnapshot(state, nowMs = 0L, dtSec = 0.0) }
     if (enablePeriodicDecay) {
       viewModelScope.launch {
-        val windCycle = floatArrayOf(6.4f, 6.5f, 6.4f, 6.3f, 6.4f, 6.6f, 6.5f, 6.4f)
-        val radCycle = floatArrayOf(0.24f, 0.24f, 0.25f, 0.24f, 0.23f, 0.24f, 0.25f, 0.24f)
-        var tick = 0
         while (true) {
           delay(1000L)
-          tick++
-          if (tick % 3 == 0) {
-            refreshLocationDerivedMetrics(SystemClock.uptimeMillis())
-          }
-          synchronized(locationLock) {
-            baseEvaSeconds++
-            if (tick % 3 == 0) {
-              val cycleIdx = (tick / 3) % windCycle.size
-              baseWindSpeedMps = windCycle[cycleIdx]
-              baseRadiationMSv = radCycle[cycleIdx]
-            }
-            baseSpo2Percent = if (tick % 12 == 6) 99 else 98
-          }
-          val nowMs = SystemClock.elapsedRealtime()
-          _uiState.update { state -> applyTelemetrySnapshot(state, nowMs) }
+          tick(safeElapsedRealtimeMs())
         }
       }
     }
   }
 
-  internal fun stepMentalVitals(nowMs: Long = SystemClock.elapsedRealtime()) {
-    _uiState.update { state -> applyTelemetrySnapshot(state, nowMs) }
+  private var tickCount = 0
+
+  /** One simulation second: advance EVA clock, suit consumables, dose, cognitive load and alerts. */
+  internal fun tick(nowMs: Long) {
+    tickCount++
+    if (tickCount % 3 == 0) refreshLocationDerivedMetrics(safeUptimeMs())
+    synchronized(locationLock) {
+      baseEvaSeconds++
+      if (tickCount % 3 == 0) {
+        baseWindSpeedMps = WIND_CYCLE[(tickCount / 3) % WIND_CYCLE.size]
+      }
+      baseSpo2Percent = if (tickCount % 12 == 6) 99 else 98
+    }
+    _uiState.update { state -> applyTelemetrySnapshot(state, nowMs, dtSec = 1.0) }
+    evaluateAlerts(nowMs)
   }
 
-  private fun applyTelemetrySnapshot(state: HudUiState, nowMs: Long): HudUiState {
-    val (baseHr, speed, evaSecs, windBase, radBase, spo2Base) =
+  internal fun stepMentalVitals(nowMs: Long = SystemClock.elapsedRealtime()) {
+    _uiState.update { state -> applyTelemetrySnapshot(state, nowMs, dtSec = 0.0) }
+  }
+
+  private fun applyTelemetrySnapshot(state: HudUiState, nowMs: Long, dtSec: Double): HudUiState {
+    val (baseHr, speed, evaSecs, windBase, spo2Base) =
       synchronized(locationLock) {
-        TelemetryBaselineSnapshot(
-          baseHrBpm = averagedHrBpm,
-          speedMps = smoothedSpeedMps,
-          evaSeconds = baseEvaSeconds,
-          windMps = baseWindSpeedMps,
-          radMSv = baseRadiationMSv,
-          spo2Percent = baseSpo2Percent,
-        )
+        Baseline(averagedHrBpm, smoothedSpeedMps, baseEvaSeconds, baseWindSpeedMps, baseSpo2Percent)
       }
 
     val drill = state.activeDrill
@@ -210,40 +255,56 @@ class HudViewModel(
     val effectiveSpo2 =
       when {
         sensorLost -> 0
-        drill == EmergencyDrill.EMERGENCY_1 ||
-          drill == EmergencyDrill.EMERGENCY_4 ||
-          drill == EmergencyDrill.EMERGENCY_10 -> 91
+        drill == EmergencyDrill.EMERGENCY_1 || drill == EmergencyDrill.EMERGENCY_4 || drill == EmergencyDrill.EMERGENCY_10 -> 91
         drill == EmergencyDrill.EMERGENCY_2 -> 88
         else -> spo2Base
       }
     val effectiveTemp = (37.1f + drill.coreTempOffsetC).coerceIn(35.5f, 40.5f)
     val effectiveHydrationPct = drill.hydrationPercentOverride ?: 74
     val effectiveHydrationL = ((effectiveHydrationPct / 74f) * 1.4f).coerceIn(0.2f, 2.0f)
-
-    val effectivePressure = drill.suitPressureOverridePsi ?: 4.3f
-    val effectiveO2Pct = drill.oxygenPercentOverride ?: 88
-    val effectiveO2Hours = drill.oxygenHoursOverride ?: 3.8f
-    val effectivePwrPct = drill.suitPowerPercentOverride ?: 92
-    val effectivePwrHours = drill.suitPowerHoursOverride ?: 4.5f
-    val effectiveCo2 = drill.ppCo2OverrideMmHg ?: 1.8f
-    val effectiveRad = drill.radiationOverrideMSv ?: radBase
     val effectiveWind = drill.windSpeedOverrideMps ?: windBase
+    val tSec = evaSecs.toDouble()
+    val position = state.marsTrackPoints.lastOrNull() ?: MarsTrackPoint(0f, 0f)
+
+    val (suit, radiation) =
+      synchronized(modelLock) {
+        suitModel.step(dtSec, effectiveHr.toDouble(), drill, tSec) to
+          radiationModel.step(dtSec, position.eastMeters, position.northMeters, speed, drill.doseRateMultiplier, tSec)
+      }
+    val helmetCo2 = suit.helmetCo2MmHg.toDouble()
 
     val workload =
-      (0.09 +
-          (speed.coerceAtLeast(0f) / 10.0) * 0.08 +
+      (0.09 + (speed.coerceAtLeast(0f) / 10.0) * 0.08 +
           if (drill == EmergencyDrill.EMERGENCY_7 || drill == EmergencyDrill.EMERGENCY_10) 0.03 else 0.0)
         .coerceIn(0.05, 0.30)
 
-    val syncedMental =
-      mentalVitals.evaluate(
-        nowMs = nowMs,
-        syncedHeartRateBpm = if (sensorLost) null else effectiveHr.toDouble(),
-        workload = workload,
-        helmetCo2MmHg = effectiveCo2.toDouble(),
-        activeDrill = drill,
-        evaSeconds = evaSecs,
-      )
+    val eye = synchronized(eyeLock) { blinkAnalyzer.metrics() }
+    val (mental, cognitive) =
+      synchronized(modelLock) {
+        val m =
+          mentalVitals.evaluate(
+            nowMs = nowMs,
+            syncedHeartRateBpm = if (sensorLost) null else effectiveHr.toDouble(),
+            workload = workload,
+            helmetCo2MmHg = helmetCo2,
+            activeDrill = drill,
+            evaSeconds = evaSecs,
+          )
+        val c =
+          cognitiveModel.evaluate(
+            nowMs,
+            CognitiveLoadInputs(
+              eye = if (state.eyeTrackingStatus == EyeTrackingStatus.ACTIVE) eye else null,
+              heartRateBpm = m.heartRate,
+              expectedHrBpm = m.expectedHr,
+              stressPercent = if (m.stressLevel == StressLevel.UNKNOWN) null else m.stressPercent,
+              helmetCo2MmHg = helmetCo2,
+              coreTempC = effectiveTemp.toDouble(),
+              sleepQualityPercent = m.sleepTracker.qualityPercent,
+            ),
+          )
+        m to c
+      }
 
     return state.copy(
       heartRateBpm = effectiveHr,
@@ -254,37 +315,117 @@ class HudViewModel(
       hydrationPercent = effectiveHydrationPct,
       hydrationLiters = effectiveHydrationL,
       isBiometricSensorLost = sensorLost,
-      suitPressurePsi = effectivePressure,
-      oxygenPercent = effectiveO2Pct,
-      oxygenHours = effectiveO2Hours,
-      suitPowerPercent = effectivePwrPct,
-      suitPowerHours = effectivePwrHours,
-      ppCo2MmHg = effectiveCo2,
-      radiationMSv = effectiveRad,
+      suit = suit,
+      radiation = radiation,
       windSpeedMps = effectiveWind,
       evaSeconds = evaSecs,
-      mentalState = syncedMental,
+      mentalState = mental,
+      cognitive = cognitive,
+      eye = eye,
+      alertAcknowledged = nowMs < acknowledgedUntilMs,
     )
   }
 
-  private data class TelemetryBaselineSnapshot(
+  private data class Baseline(
     val baseHrBpm: Float,
     val speedMps: Float,
     val evaSeconds: Int,
     val windMps: Float,
-    val radMSv: Float,
     val spo2Percent: Int,
   )
 
-  fun onPermissionResult(granted: Boolean) {
-    if (!granted) {
-      synchronized(gestureLock) { classifier.reset() }
+  // ---------------------------------------------------------------- Alerts
+
+  /**
+   * Cognitive-load alerting. CAUTION (>=70) is visual only; WARNING (>=90) is spoken once on entry;
+   * EMERGENCY (>=95) announces the load and the crew member's pulse every [ALERT_CYCLE_MS] until
+   * acknowledged (thumb up / "acknowledge"), which snoozes for [ACK_SNOOZE_MS].
+   */
+  internal fun evaluateAlerts(nowMs: Long) {
+    val state = _uiState.value
+    val level = state.cognitive.level
+    val acked = nowMs < acknowledgedUntilMs
+    val pulse =
+      if (state.isBiometricSensorLost) "Pulse signal lost" else "Pulse ${state.heartRateBpm} beats per minute"
+    when (level) {
+      CognitiveLevel.EMERGENCY -> {
+        val last = lastEmergencySpokenMs
+        if (!acked && (last == null || nowMs - last >= ALERT_CYCLE_MS)) {
+          lastEmergencySpokenMs = nowMs
+          _events.tryEmit(
+            HudEvent.Speak(
+              "Emergency. Cognitive load ${state.cognitive.index}. $pulse. ${state.cognitive.topDriver.lowercase()}. Thumbs up to acknowledge."
+            )
+          )
+        }
+      }
+      CognitiveLevel.WARNING -> {
+        lastEmergencySpokenMs = null
+        if (!acked && lastAlertLevel.ordinal < CognitiveLevel.WARNING.ordinal) {
+          _events.tryEmit(HudEvent.Speak("Warning. Cognitive load ${state.cognitive.index}. $pulse. Pause and slow your breathing."))
+        }
+      }
+      else -> lastEmergencySpokenMs = null
     }
+    lastAlertLevel = level
+
+    val rad = state.radiation
+    if (rad.status == RadiationStatus.STORM && lastRadiationStatus != RadiationStatus.STORM) {
+      val heading = rad.bearingToBaseDeg.roundToInt()
+      _events.tryEmit(
+        HudEvent.Speak(
+          if (rad.shelter == com.example.radiation.ShelterStatus.SHELTERED) "Solar particle event. Stay inside the base."
+          else "Solar particle event. Return to base, bearing $heading, ${rad.distanceToBaseMeters.roundToInt()} meters."
+        )
+      )
+    }
+    lastRadiationStatus = rad.status
+  }
+
+  fun acknowledgeAlerts(nowMs: Long = safeElapsedRealtimeMs()) {
+    acknowledgedUntilMs = nowMs + ACK_SNOOZE_MS
+    _events.tryEmit(HudEvent.StopSpeaking)
+    _uiState.update { it.copy(alertAcknowledged = true) }
+  }
+
+  // ---------------------------------------------------------------- Eye tracking
+
+  fun onEyeTrackingStatus(status: EyeTrackingStatus) {
+    _uiState.update { if (it.eyeTrackingStatus == status) it else it.copy(eyeTrackingStatus = status) }
+  }
+
+  fun onEyeSample(sample: EyeSample) {
+    val metrics =
+      synchronized(eyeLock) {
+        blinkAnalyzer.process(sample)
+        if (sample.timestampMs - lastEyePublishMs < EYE_PUBLISH_INTERVAL_MS) return
+        lastEyePublishMs = sample.timestampMs
+        blinkAnalyzer.metrics()
+      }
+    _uiState.update {
+      it.copy(
+        eye = metrics,
+        eyeTrackingStatus = if (it.eyeTrackingStatus == EyeTrackingStatus.STARTING) EyeTrackingStatus.ACTIVE else it.eyeTrackingStatus,
+      )
+    }
+  }
+
+  fun toggleEyePreview() {
+    _uiState.update { it.copy(eyePreviewEnabled = !it.eyePreviewEnabled) }
+  }
+
+  fun onMicStatus(status: MicStatus) {
+    _uiState.update { if (it.mic == status) it else it.copy(mic = status) }
+  }
+
+  // ---------------------------------------------------------------- Permissions / sensors
+
+  fun onPermissionResult(granted: Boolean) {
+    if (!granted) synchronized(gestureLock) { classifier.reset() }
     _uiState.update { state ->
       state.copy(
         hasCameraPermission = granted,
-        palmHoldProgress = if (granted) state.palmHoldProgress else 0f,
-        isTwoFistsReady = if (granted) state.isTwoFistsReady else false,
+        gesture = if (granted) state.gesture else GestureFeedback(),
         dashboardMode = if (granted) state.dashboardMode else DashboardMode.CLOSED,
       )
     }
@@ -292,101 +433,65 @@ class HudViewModel(
 
   fun onLocationPermissionResult(granted: Boolean) {
     _uiState.update { state ->
-      state.copy(
-        hasLocationPermission = granted,
-        hasGpsFix = if (granted) state.hasGpsFix else false,
-      )
+      state.copy(hasLocationPermission = granted, hasGpsFix = if (granted) state.hasGpsFix else false)
     }
   }
 
   fun onGpsFixStatusChanged(hasFix: Boolean) {
-    _uiState.update { state ->
-      if (state.hasGpsFix == hasFix) state else state.copy(hasGpsFix = hasFix)
-    }
-  }
-
-  fun selectDashboardPage(page: DashboardPage) {
-    _uiState.update { state ->
-      if (state.currentPage == page) state else state.copy(currentPage = page)
-    }
-  }
-
-  fun stepDashboardPage(direction: SwipeDirection) {
-    _uiState.update { state ->
-      val pages = DashboardPage.entries
-      val nextIndex =
-        when (direction) {
-          SwipeDirection.PREVIOUS -> (state.currentPage.ordinal - 1).coerceAtLeast(0)
-          SwipeDirection.NEXT -> (state.currentPage.ordinal + 1).coerceAtMost(pages.lastIndex)
-        }
-      val nextPage = pages[nextIndex]
-      state.copy(
-        currentPage = nextPage,
-        lastSwipeDirection = direction,
-        swipeCueId = state.swipeCueId + 1L,
-      )
-    }
+    _uiState.update { state -> if (state.hasGpsFix == hasFix) state else state.copy(hasGpsFix = hasFix) }
   }
 
   fun onHeadingChanged(degrees: Float) {
     _uiState.update { state ->
-      if (state.headingDegrees == degrees) state else state.copy(headingDegrees = degrees)
+      if (abs(SpatialLayout.angleDelta(state.headingDegrees, degrees)) < HEAD_EPSILON_DEG) state
+      else withFocusFromHead(state.copy(headingDegrees = degrees))
     }
+  }
+
+  fun onPitchChanged(degrees: Float) {
+    _uiState.update { state ->
+      if (abs(state.pitchDegrees - degrees) < HEAD_EPSILON_DEG) state
+      else withFocusFromHead(state.copy(pitchDegrees = degrees))
+    }
+  }
+
+  private fun withFocusFromHead(state: HudUiState): HudUiState {
+    if (!state.isDashboardOpen || state.isMapPinching) return state
+    val focused =
+      SpatialLayout.focusedPage(state.headingDegrees, state.pitchDegrees, state.anchorYawDegrees, state.anchorPitchDegrees)
+    return if (focused == state.currentPage) state else state.copy(currentPage = focused)
   }
 
   fun onBatteryPercentChanged(percent: Int) {
     val clamped = percent.coerceIn(0, 100)
-    _uiState.update { state ->
-      if (state.batteryPercent == clamped) state else state.copy(batteryPercent = clamped)
-    }
+    _uiState.update { state -> if (state.batteryPercent == clamped) state else state.copy(batteryPercent = clamped) }
   }
 
   fun onGpsVectorDelta(deltaEastMeters: Float, deltaNorthMeters: Float) {
     if (deltaEastMeters == 0f && deltaNorthMeters == 0f) return
     _uiState.update { state ->
       val last = state.marsTrackPoints.lastOrNull() ?: MarsTrackPoint(0f, 0f)
-      val nextPoint =
-        MarsTrackPoint(
-          eastMeters = last.eastMeters + deltaEastMeters,
-          northMeters = last.northMeters + deltaNorthMeters,
-        )
-      val updated = (state.marsTrackPoints + nextPoint).takeLast(HudUiState.MAX_TRACK_POINTS)
-      state.copy(marsTrackPoints = updated)
+      val next = MarsTrackPoint(last.eastMeters + deltaEastMeters, last.northMeters + deltaNorthMeters)
+      state.copy(marsTrackPoints = (state.marsTrackPoints + next).takeLast(HudUiState.MAX_TRACK_POINTS))
     }
   }
 
-  fun onLocationSample(
-    deltaMeters: Float,
-    measuredSpeedMps: Float,
-    timestampMs: Long = SystemClock.uptimeMillis(),
-  ) {
+  fun onLocationSample(deltaMeters: Float, measuredSpeedMps: Float, timestampMs: Long = SystemClock.uptimeMillis()) {
     val (nextDist, nextSpeed) =
       synchronized(locationLock) {
-        if (deltaMeters > 0f) {
-          totalDistanceMeters += deltaMeters
-        }
+        if (deltaMeters > 0f) totalDistanceMeters += deltaMeters
         lastLocationSampleMs = timestampMs
         val clampedSpeed = measuredSpeedMps.coerceIn(0f, MAX_SPEED_MPS)
         smoothedSpeedMps += SPEED_SMOOTH_ALPHA * (clampedSpeed - smoothedSpeedMps)
-        if (clampedSpeed == 0f && smoothedSpeedMps < 0.05f) {
-          smoothedSpeedMps = 0f
-        }
-
-        val targetHr = computeTargetHeartRate(smoothedSpeedMps)
-        averagedHrBpm += HR_SMOOTH_ALPHA * (targetHr - averagedHrBpm)
-
+        if (clampedSpeed == 0f && smoothedSpeedMps < 0.05f) smoothedSpeedMps = 0f
+        averagedHrBpm += HR_SMOOTH_ALPHA * (computeTargetHeartRate(smoothedSpeedMps) - averagedHrBpm)
         totalDistanceMeters to smoothedSpeedMps
       }
-
     _uiState.update { state ->
       applyTelemetrySnapshot(
-        state =
-          state.copy(
-            hasGpsFix = true,
-            distanceMeters = nextDist,
-            speedMps = nextSpeed,
-          ),
+        state.copy(hasGpsFix = true, distanceMeters = nextDist, speedMps = nextSpeed),
         nowMs = timestampMs,
+        dtSec = 0.0,
       )
     }
   }
@@ -397,127 +502,136 @@ class HudViewModel(
         val stale = lastLocationSampleMs == 0L || nowMs - lastLocationSampleMs > SPEED_STALE_MS
         if (stale) {
           smoothedSpeedMps += SPEED_SMOOTH_ALPHA * (0f - smoothedSpeedMps)
-          if (smoothedSpeedMps < 0.05f) {
-            smoothedSpeedMps = 0f
-          }
+          if (smoothedSpeedMps < 0.05f) smoothedSpeedMps = 0f
         }
-        val targetHr = computeTargetHeartRate(smoothedSpeedMps)
-        averagedHrBpm += HR_SMOOTH_ALPHA * (targetHr - averagedHrBpm)
+        averagedHrBpm += HR_SMOOTH_ALPHA * (computeTargetHeartRate(smoothedSpeedMps) - averagedHrBpm)
         smoothedSpeedMps to averagedHrBpm.roundToInt()
       }
-
     _uiState.update { state ->
-      val expectedEffectiveHr = (baseHr + state.activeDrill.hrOffsetBpm).coerceIn(50, 195)
-      if (state.speedMps == nextSpeed && state.heartRateBpm == expectedEffectiveHr) {
-        state
-      } else {
-        applyTelemetrySnapshot(
-          state = state.copy(speedMps = nextSpeed),
-          nowMs = nowMs,
-        )
-      }
+      val expectedHr = (baseHr + state.activeDrill.hrOffsetBpm).coerceIn(50, 195)
+      if (state.speedMps == nextSpeed && state.heartRateBpm == expectedHr) state
+      else applyTelemetrySnapshot(state.copy(speedMps = nextSpeed), nowMs, dtSec = 0.0)
     }
   }
 
-  fun onHandsDetected(hands: List<List<HandLandmarkPoint>>, timestampMs: Long) {
-    synchronized(gestureLock) {
-      val currentState = _uiState.value
-      val currentMode = currentState.dashboardMode
-      val update = classifier.processFrames(hands, timestampMs, currentMode, currentState.currentPage)
+  // ---------------------------------------------------------------- Dashboard navigation
 
-      when {
-        update.openMode != null -> {
-          val nextMode = update.openMode
-          _uiState.update {
-            it.copy(
-              dashboardMode = nextMode,
-              palmHoldProgress = 0f,
-              isTwoFistsReady = false,
-              isMapPinching = false,
-            )
-          }
-        }
-        update.shouldCloseDashboard -> {
-          _uiState.update {
-            it.copy(
-              dashboardMode = DashboardMode.CLOSED,
-              palmHoldProgress = 0f,
-              isTwoFistsReady = false,
-              isMapPinching = false,
-            )
-          }
-        }
-        else -> {
-          if (currentMode == DashboardMode.PERMANENT && update.swipeDirection != null) {
-            stepDashboardPage(update.swipeDirection)
-          }
-          _uiState.update { state ->
-            val targetProgress =
-              if (currentMode == DashboardMode.PERMANENT) 0f else update.palmHoldProgress
-            val targetFists =
-              if (currentMode == DashboardMode.PERMANENT) update.isTwoFistsReady else false
-
-            val nextZoom: Float
-            val nextTilt: Float
-            val nextPanEast: Float
-            val nextPanNorth: Float
-            if (update.mapPinchActive && state.isDashboardOpen && state.currentPage == DashboardPage.MAP) {
-              nextZoom =
-                (state.mapZoom + update.mapPinchForwardDelta * 3.2f).coerceIn(
-                  MarsMolaTileCoords.MIN_MAP_ZOOM,
-                  MarsMolaTileCoords.MAX_MAP_ZOOM,
-                )
-              nextTilt = computeTiltForZoom(nextZoom)
-              val panSensitivity = 16f / nextZoom
-              nextPanEast =
-                (state.mapPanEastDeg + update.mapPinchPanDeltaX * panSensitivity).coerceIn(
-                  -MarsMolaTileCoords.MAX_PAN_EAST_DEG,
-                  MarsMolaTileCoords.MAX_PAN_EAST_DEG,
-                )
-              nextPanNorth =
-                (state.mapPanNorthDeg - update.mapPinchPanDeltaY * panSensitivity).coerceIn(
-                  -MarsMolaTileCoords.MAX_PAN_NORTH_DEG,
-                  MarsMolaTileCoords.MAX_PAN_NORTH_DEG,
-                )
-            } else {
-              nextZoom = state.mapZoom
-              nextTilt = state.mapTiltDegrees
-              nextPanEast = state.mapPanEastDeg
-              nextPanNorth = state.mapPanNorthDeg
-            }
-
-            state.copy(
-              palmHoldProgress = targetProgress,
-              isTwoFistsReady = targetFists,
-              isMapPinching = update.mapPinchActive,
-              mapZoom = nextZoom,
-              mapTiltDegrees = nextTilt,
-              mapPanEastDeg = nextPanEast,
-              mapPanNorthDeg = nextPanNorth,
-            )
-          }
-        }
-      }
-    }
-  }
-
-  private fun adjustMapZoom(deltaZoom: Float) {
+  private fun openDashboard(mode: DashboardMode) {
     _uiState.update { state ->
-      val nextZoom =
-        (state.mapZoom + deltaZoom).coerceIn(
-          MarsMolaTileCoords.MIN_MAP_ZOOM,
-          MarsMolaTileCoords.MAX_MAP_ZOOM,
-        )
+      val page = if (state.isDashboardOpen) state.currentPage else state.currentPage
       state.copy(
-        mapZoom = nextZoom,
-        mapTiltDegrees = computeTiltForZoom(nextZoom),
+        dashboardMode = mode,
+        currentPage = page,
+        anchorYawDegrees = SpatialLayout.anchorYawFor(page, state.headingDegrees),
+        anchorPitchDegrees = if (page == DashboardPage.DRILLS) state.pitchDegrees - SpatialLayout.DRILLS_PITCH_OFFSET_DEG else state.pitchDegrees,
+        isMapPinching = false,
       )
     }
   }
 
-  private fun recenterMap() {
+  private fun closeDashboard() {
+    _uiState.update { it.copy(dashboardMode = DashboardMode.CLOSED, isMapPinching = false) }
+  }
+
+  /** Brings [page] directly in front of the current head direction. */
+  fun selectDashboardPage(page: DashboardPage) {
     _uiState.update { state ->
       state.copy(
+        currentPage = page,
+        anchorYawDegrees = if (page == DashboardPage.DRILLS) state.anchorYawDegrees else SpatialLayout.anchorYawFor(page, state.headingDegrees),
+        anchorPitchDegrees =
+          if (page == DashboardPage.DRILLS) state.pitchDegrees - SpatialLayout.DRILLS_PITCH_OFFSET_DEG else state.pitchDegrees,
+      )
+    }
+  }
+
+  fun stepDashboardPage(direction: SwipeDirection) {
+    val current = _uiState.value.currentPage
+    val next =
+      when (direction) {
+        SwipeDirection.NEXT -> DashboardPage.ringNext(current)
+        SwipeDirection.PREVIOUS -> DashboardPage.ringPrevious(current)
+      }
+    selectDashboardPage(next)
+    _uiState.update { it.copy(lastSwipeDirection = direction, swipeCueId = it.swipeCueId + 1L) }
+  }
+
+  fun recenterView() {
+    selectDashboardPage(_uiState.value.currentPage)
+  }
+
+  private fun setDrill(drill: EmergencyDrill) {
+    val evalTimeMs = safeElapsedRealtimeMs()
+    _uiState.update { state -> applyTelemetrySnapshot(state.copy(activeDrill = drill), evalTimeMs, dtSec = 0.0) }
+    evaluateAlerts(evalTimeMs)
+  }
+
+  // ---------------------------------------------------------------- Gestures
+
+  fun onHandsDetected(hands: List<HandObservation>, timestampMs: Long) {
+    synchronized(gestureLock) {
+      val current = _uiState.value
+      val update = classifier.process(hands, timestampMs, current.dashboardMode, current.currentPage)
+
+      update.action?.let { action ->
+        when (action) {
+          GestureAction.OPEN_DASHBOARD -> openDashboard(DashboardMode.PERMANENT)
+          GestureAction.CLOSE_DASHBOARD -> closeDashboard()
+          GestureAction.NEXT_TILE -> stepDashboardPage(SwipeDirection.NEXT)
+          GestureAction.PREVIOUS_TILE -> stepDashboardPage(SwipeDirection.PREVIOUS)
+          GestureAction.RECENTER -> recenterView()
+          GestureAction.ACKNOWLEDGE -> acknowledgeAlerts()
+          GestureAction.TOGGLE_EYE_PREVIEW -> toggleEyePreview()
+          GestureAction.CLEAR_DRILL -> setDrill(EmergencyDrill.NONE)
+        }
+      }
+
+      _uiState.update { state ->
+        val feedback =
+          GestureFeedback(
+            activePose = update.activePose,
+            pendingAction = update.pendingAction,
+            holdProgress = update.holdProgress,
+            lastAction = update.action ?: state.gesture.lastAction,
+            lastActionId = if (update.action != null) state.gesture.lastActionId + 1 else state.gesture.lastActionId,
+          )
+        if (update.mapPinchActive && state.isDashboardOpen && state.currentPage == DashboardPage.MAP) {
+          val nextZoom =
+            (state.mapZoom + update.mapPinchForwardDelta * 3.2f).coerceIn(MarsMolaTileCoords.MIN_MAP_ZOOM, MarsMolaTileCoords.MAX_MAP_ZOOM)
+          val panSensitivity = 16f / nextZoom
+          state.copy(
+            gesture = feedback,
+            isMapPinching = true,
+            mapZoom = nextZoom,
+            mapTiltDegrees = computeTiltForZoom(nextZoom),
+            mapPanEastDeg =
+              (state.mapPanEastDeg + update.mapPinchPanDeltaX * panSensitivity)
+                .coerceIn(-MarsMolaTileCoords.MAX_PAN_EAST_DEG, MarsMolaTileCoords.MAX_PAN_EAST_DEG),
+            mapPanNorthDeg =
+              (state.mapPanNorthDeg - update.mapPinchPanDeltaY * panSensitivity)
+                .coerceIn(-MarsMolaTileCoords.MAX_PAN_NORTH_DEG, MarsMolaTileCoords.MAX_PAN_NORTH_DEG),
+          )
+        } else {
+          state.copy(gesture = feedback, isMapPinching = false)
+        }
+      }
+    }
+  }
+
+  /** Raw-landmark overload (no classifier categories), used by tests and the fallback model. */
+  fun onHandLandmarks(hands: List<List<HandLandmarkPoint>>, timestampMs: Long) =
+    onHandsDetected(hands.map { HandObservation(it) }, timestampMs)
+
+  private fun adjustMapZoom(deltaZoom: Float) {
+    _uiState.update { state ->
+      val nextZoom = (state.mapZoom + deltaZoom).coerceIn(MarsMolaTileCoords.MIN_MAP_ZOOM, MarsMolaTileCoords.MAX_MAP_ZOOM)
+      state.copy(mapZoom = nextZoom, mapTiltDegrees = computeTiltForZoom(nextZoom))
+    }
+  }
+
+  private fun recenterMap() {
+    _uiState.update {
+      it.copy(
         mapZoom = MarsMolaTileCoords.MIN_MAP_ZOOM,
         mapTiltDegrees = 0f,
         mapPanEastDeg = 0f,
@@ -527,108 +641,51 @@ class HudViewModel(
     }
   }
 
+  // ---------------------------------------------------------------- Voice
+
   fun onVoiceCommand(command: VoiceCommand) {
     synchronized(gestureLock) {
-      val currentState = _uiState.value
-      val currentMode = currentState.dashboardMode
+      val state = _uiState.value
+      val open = state.isDashboardOpen
       when (command) {
         VoiceCommand.TOGGLE_QUICK -> {
           classifier.reset()
-          val nextMode =
-            when (currentMode) {
-              DashboardMode.CLOSED -> DashboardMode.QUICK_VOICE
-              DashboardMode.QUICK_VOICE,
-              DashboardMode.QUICK_HOLD -> DashboardMode.CLOSED
-              DashboardMode.PERMANENT -> DashboardMode.PERMANENT
-            }
-          _uiState.update {
-            it.copy(
-              dashboardMode = nextMode,
-              palmHoldProgress = 0f,
-              isTwoFistsReady = false,
-            )
+          when (state.dashboardMode) {
+            DashboardMode.CLOSED -> openDashboard(DashboardMode.QUICK_VOICE)
+            DashboardMode.QUICK_VOICE -> closeDashboard()
+            DashboardMode.PERMANENT -> Unit
           }
         }
         VoiceCommand.OPEN_PERMANENT -> {
           classifier.reset()
-          _uiState.update {
-            it.copy(
-              dashboardMode = DashboardMode.PERMANENT,
-              palmHoldProgress = 0f,
-              isTwoFistsReady = false,
-            )
-          }
+          openDashboard(DashboardMode.PERMANENT)
         }
         VoiceCommand.CLOSE_PERMANENT -> {
           classifier.reset()
-          _uiState.update {
-            it.copy(
-              dashboardMode = DashboardMode.CLOSED,
-              palmHoldProgress = 0f,
-              isTwoFistsReady = false,
-            )
-          }
+          closeDashboard()
         }
-        VoiceCommand.NAVIGATE_VITALS -> {
-          if (currentMode != DashboardMode.CLOSED) {
-            selectDashboardPage(DashboardPage.VITALS)
-          }
-        }
-        VoiceCommand.NAVIGATE_MAP -> {
-          if (currentMode != DashboardMode.CLOSED) {
-            selectDashboardPage(DashboardPage.MAP)
-          }
-        }
-        VoiceCommand.NAVIGATE_SUIT -> {
-          if (currentMode != DashboardMode.CLOSED) {
-            selectDashboardPage(DashboardPage.SUIT_STATUS)
-          }
-        }
-        VoiceCommand.NAVIGATE_COGNITIVE -> {
-          if (currentMode != DashboardMode.CLOSED) {
-            selectDashboardPage(DashboardPage.COGNITIVE)
-          }
-        }
-        VoiceCommand.NAVIGATE_DRILLS -> {
-          if (currentMode != DashboardMode.CLOSED) {
-            selectDashboardPage(DashboardPage.DRILLS)
-          }
-        }
-        is VoiceCommand.RunEmergency -> {
-          val drill = EmergencyDrill.fromNumber(command.number) ?: return
-          val evalTimeMs = safeElapsedRealtimeMs()
-          _uiState.update { state ->
-            applyTelemetrySnapshot(
-              state = state.copy(activeDrill = drill),
-              nowMs = evalTimeMs,
-            )
-          }
-        }
-        VoiceCommand.MAP_ZOOM_IN -> {
-          if (currentMode != DashboardMode.CLOSED && currentState.currentPage == DashboardPage.MAP) {
-            adjustMapZoom(VOICE_ZOOM_STEP)
-          }
-        }
-        VoiceCommand.MAP_ZOOM_OUT -> {
-          if (currentMode != DashboardMode.CLOSED && currentState.currentPage == DashboardPage.MAP) {
-            adjustMapZoom(-VOICE_ZOOM_STEP)
-          }
-        }
-        VoiceCommand.MAP_RECENTER -> {
-          if (currentMode != DashboardMode.CLOSED && currentState.currentPage == DashboardPage.MAP) {
-            recenterMap()
-          }
-        }
+        VoiceCommand.NAVIGATE_MENTAL -> if (open) selectDashboardPage(DashboardPage.MENTAL)
+        VoiceCommand.NAVIGATE_VITALS -> if (open) selectDashboardPage(DashboardPage.VITALS)
+        VoiceCommand.NAVIGATE_RADIATION -> if (open) selectDashboardPage(DashboardPage.RADIATION)
+        VoiceCommand.NAVIGATE_MAP -> if (open) selectDashboardPage(DashboardPage.MAP)
+        VoiceCommand.NAVIGATE_DRILLS -> if (open) selectDashboardPage(DashboardPage.DRILLS)
+        is VoiceCommand.RunEmergency -> EmergencyDrill.fromNumber(command.number)?.let { setDrill(it) }
+        VoiceCommand.MAP_ZOOM_IN -> if (open && state.currentPage == DashboardPage.MAP) adjustMapZoom(VOICE_ZOOM_STEP)
+        VoiceCommand.MAP_ZOOM_OUT -> if (open && state.currentPage == DashboardPage.MAP) adjustMapZoom(-VOICE_ZOOM_STEP)
+        VoiceCommand.MAP_RECENTER -> if (open && state.currentPage == DashboardPage.MAP) recenterMap()
+        VoiceCommand.RECENTER_VIEW -> if (open) recenterView()
+        VoiceCommand.ACKNOWLEDGE -> acknowledgeAlerts()
+        VoiceCommand.TOGGLE_EYE_PREVIEW -> toggleEyePreview()
+        VoiceCommand.CALIBRATE_MIC -> _events.tryEmit(HudEvent.RecalibrateMic)
+        VoiceCommand.SENSITIVITY_UP,
+        VoiceCommand.SENSITIVITY_DOWN -> Unit // handled inside the recogniser
       }
     }
   }
 
   fun onInvisibleExitZoneTap(nowMs: Long = SystemClock.uptimeMillis()) {
     synchronized(exitTapTimestampsMs) {
-      while (
-        exitTapTimestampsMs.isNotEmpty() &&
-          nowMs - exitTapTimestampsMs.first() > EXIT_TAP_WINDOW_MS
-      ) {
+      while (exitTapTimestampsMs.isNotEmpty() && nowMs - exitTapTimestampsMs.first() > EXIT_TAP_WINDOW_MS) {
         exitTapTimestampsMs.removeFirst()
       }
       exitTapTimestampsMs.addLast(nowMs)
@@ -642,7 +699,12 @@ class HudViewModel(
   companion object {
     const val REQUIRED_EXIT_TAPS = 5
     const val EXIT_TAP_WINDOW_MS = 2000L
+    const val ALERT_CYCLE_MS = 20_000L
+    const val ACK_SNOOZE_MS = 60_000L
 
+    private val WIND_CYCLE = floatArrayOf(6.4f, 6.5f, 6.4f, 6.3f, 6.4f, 6.6f, 6.5f, 6.4f)
+    private const val EYE_PUBLISH_INTERVAL_MS = 250L
+    private const val HEAD_EPSILON_DEG = 0.25f
     private const val SPEED_STALE_MS = 4_500L
     private const val SPEED_SMOOTH_ALPHA = 0.45f
     private const val HR_SMOOTH_ALPHA = 0.30f
@@ -654,16 +716,11 @@ class HudViewModel(
 
     internal fun computeTiltForZoom(zoom: Float): Float {
       val span = (MarsMolaTileCoords.MAX_MAP_ZOOM - MarsMolaTileCoords.MIN_MAP_ZOOM).coerceAtLeast(1f)
-      return (((zoom - MarsMolaTileCoords.MIN_MAP_ZOOM) / span) * MAX_TILT_DEGREES).coerceIn(
-        0f,
-        MAX_TILT_DEGREES,
-      )
+      return (((zoom - MarsMolaTileCoords.MIN_MAP_ZOOM) / span) * MAX_TILT_DEGREES).coerceIn(0f, MAX_TILT_DEGREES)
     }
 
-    internal fun computeTargetHeartRate(speedMps: Float): Float {
-      return (HudUiState.BASE_HR_BPM + speedMps.coerceAtLeast(0f) * HR_SPEED_MULTIPLIER)
-        .coerceIn(HudUiState.BASE_HR_BPM, MAX_HR_BPM)
-    }
+    internal fun computeTargetHeartRate(speedMps: Float): Float =
+      (HudUiState.BASE_HR_BPM + speedMps.coerceAtLeast(0f) * HR_SPEED_MULTIPLIER).coerceIn(HudUiState.BASE_HR_BPM, MAX_HR_BPM)
 
     internal fun computeBloodPressure(heartRateBpm: Float): Pair<Int, Int> {
       val exertionDelta = (heartRateBpm - HudUiState.BASE_HR_BPM).coerceAtLeast(0f)

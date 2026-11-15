@@ -2,21 +2,37 @@ package com.example.gesture
 
 import kotlin.math.abs
 import kotlin.math.hypot
-import kotlin.math.min
 
 enum class DashboardMode {
   CLOSED,
-  QUICK_HOLD,
   QUICK_VOICE,
   PERMANENT,
 }
 
-enum class DashboardPage {
-  VITALS,
-  MAP,
-  SUIT_STATUS,
-  COGNITIVE,
-  DRILLS,
+/**
+ * Spatial dashboard tiles. [ring] is the head-turn loop
+ * MENTAL -> VITALS -> RADIATION -> MAP -> (back to) MENTAL. DRILLS sits below the ring.
+ */
+enum class DashboardPage(val title: String) {
+  MENTAL("MENTAL"),
+  VITALS("VITALS"),
+  RADIATION("RADIATION"),
+  MAP("MAP"),
+  DRILLS("DRILLS");
+
+  companion object {
+    val ring: List<DashboardPage> = listOf(MENTAL, VITALS, RADIATION, MAP)
+
+    fun ringNext(page: DashboardPage): DashboardPage {
+      val idx = ring.indexOf(page)
+      return if (idx < 0) MENTAL else ring[(idx + 1) % ring.size]
+    }
+
+    fun ringPrevious(page: DashboardPage): DashboardPage {
+      val idx = ring.indexOf(page)
+      return if (idx < 0) MAP else ring[(idx - 1 + ring.size) % ring.size]
+    }
+  }
 }
 
 enum class SwipeDirection {
@@ -26,34 +42,83 @@ enum class SwipeDirection {
 
 data class HandLandmarkPoint(val x: Float, val y: Float, val z: Float = 0f)
 
+/** Hand poses from the MediaPipe Gesture Recognizer canned classifier. */
+enum class HandPose(val label: String) {
+  NONE("—"),
+  OPEN_PALM("PALM"),
+  CLOSED_FIST("FIST"),
+  POINTING_UP("POINT"),
+  THUMB_UP("THUMB UP"),
+  THUMB_DOWN("THUMB DOWN"),
+  VICTORY("V SIGN"),
+  I_LOVE_YOU("ROCK");
+
+  companion object {
+    fun fromCategory(name: String?): HandPose =
+      when (name) {
+        "Open_Palm" -> OPEN_PALM
+        "Closed_Fist" -> CLOSED_FIST
+        "Pointing_Up" -> POINTING_UP
+        "Thumb_Up" -> THUMB_UP
+        "Thumb_Down" -> THUMB_DOWN
+        "Victory" -> VICTORY
+        "ILoveYou" -> I_LOVE_YOU
+        else -> NONE
+      }
+  }
+}
+
+data class HandObservation(
+  val landmarks: List<HandLandmarkPoint>,
+  val pose: HandPose = HandPose.NONE,
+  val poseScore: Float = 0f,
+)
+
+enum class GestureAction(val label: String) {
+  OPEN_DASHBOARD("OPEN"),
+  CLOSE_DASHBOARD("CLOSE"),
+  NEXT_TILE("NEXT"),
+  PREVIOUS_TILE("BACK"),
+  RECENTER("RECENTER"),
+  ACKNOWLEDGE("ACK ALERT"),
+  TOGGLE_EYE_PREVIEW("EYE CAM"),
+  CLEAR_DRILL("CLEAR DRILL"),
+}
+
 data class GestureUpdate(
-  val palmHoldProgress: Float = 0f,
-  val isTwoFistsReady: Boolean = false,
-  val openMode: DashboardMode? = null,
-  val shouldCloseDashboard: Boolean = false,
-  val swipeDirection: SwipeDirection? = null,
+  val action: GestureAction? = null,
+  val pendingAction: GestureAction? = null,
+  val holdProgress: Float = 0f,
+  val activePose: HandPose = HandPose.NONE,
   val mapPinchActive: Boolean = false,
   val mapPinchForwardDelta: Float = 0f,
   val mapPinchPanDeltaX: Float = 0f,
   val mapPinchPanDeltaY: Float = 0f,
 )
 
+/**
+ * Gesture vocabulary (one hand is enough for everything):
+ *  - Open palm, hold 0.6 s ............ open dashboard (when closed)
+ *  - Open hand swipe left / right ...... previous / next tile (wraps around the ring)
+ *  - Closed fist, hold 0.6 s ........... close dashboard
+ *  - Pointing up, hold 0.5 s ........... recenter tiles in front of you
+ *  - Thumb up, hold 0.4 s .............. acknowledge / silence alerts
+ *  - Victory (V), hold 0.6 s ........... toggle eye-camera preview
+ *  - Thumb down, hold 0.9 s ............ clear the active drill
+ *  - Thumb-index pinch on the MAP tile . zoom (push / pull) and pan (drag)
+ *
+ * A held pose must stay steady (no large hand travel) and fires once; the pose must be released
+ * before it can fire again. Poses come from the ML classifier when confident, otherwise from
+ * geometric landmark heuristics.
+ */
 class HandGestureClassifier {
 
-  private var onePalmHoldStartMs: Long? = null
-  private var lastOnePalmSeenMs: Long? = null
-
-  private var twoPalmHoldStartMs: Long? = null
-  private var lastTwoPalmsSeenMs: Long? = null
-
-  private var twoFistsArmedAtMs: Long? = null
-  private var lastTwoFistsSeenMs: Long? = null
-  private var minLeftFistY: Float = 1f
-  private var minRightFistY: Float = 1f
-  private var lastLeftFistX: Float = 0.3f
-  private var lastRightFistX: Float = 0.7f
-  private var lastLeftFistY: Float = 0f
-  private var lastRightFistY: Float = 0f
+  private var heldPose: HandPose = HandPose.NONE
+  private var holdStartMs: Long = 0L
+  private var holdLastSeenMs: Long = 0L
+  private var holdStartX: Float = 0f
+  private var holdStartY: Float = 0f
+  private var awaitingReleaseOf: HandPose = HandPose.NONE
 
   private var swipeStartMs: Long? = null
   private var swipeStartX: Float = 0f
@@ -76,192 +141,154 @@ class HandGestureClassifier {
   private var cooldownUntilMs: Long = 0L
 
   fun reset() {
-    onePalmHoldStartMs = null
-    lastOnePalmSeenMs = null
-    twoPalmHoldStartMs = null
-    lastTwoPalmsSeenMs = null
-    clearTwoFistsState()
+    clearHold()
+    awaitingReleaseOf = HandPose.NONE
     clearSwipeState()
     clearPinchState()
     swipeCooldownUntilMs = 0L
     cooldownUntilMs = 0L
   }
 
+  /** Back-compat entry point for raw landmarks without classifier output. */
   fun processFrames(
     hands: List<List<HandLandmarkPoint>>,
     timestampMs: Long,
     currentMode: DashboardMode,
     currentPage: DashboardPage = DashboardPage.MAP,
+  ): GestureUpdate = process(hands.map { HandObservation(it) }, timestampMs, currentMode, currentPage)
+
+  fun process(
+    observations: List<HandObservation>,
+    timestampMs: Long,
+    currentMode: DashboardMode,
+    currentPage: DashboardPage = DashboardPage.MAP,
   ): GestureUpdate {
+    val hands = observations.filter { it.landmarks.size >= 21 }
+    val resolved = hands.map { it to resolvePose(it) }
+    val dominant = resolved.maxByOrNull { (obs, pose) -> if (pose == HandPose.NONE) -1f else obs.poseScore + 1f }
+    val dominantPose = dominant?.second ?: HandPose.NONE
+
+    if (awaitingReleaseOf != HandPose.NONE && resolved.none { it.second == awaitingReleaseOf }) {
+      awaitingReleaseOf = HandPose.NONE
+    }
+
     if (timestampMs < cooldownUntilMs) {
-      return GestureUpdate()
+      return GestureUpdate(activePose = dominantPose)
     }
 
-    val openPalms = hands.filter { it.size >= 21 && isOpenPalmUp(it) }
-    val openPalmsCount = openPalms.size
-    val closedFists = hands.filter { it.size >= 21 && isClosedFist(it) }
+    val dashboardOpen = currentMode != DashboardMode.CLOSED
 
-    when (currentMode) {
-      DashboardMode.CLOSED -> {
-        clearTwoFistsState()
+    // 1. Map pinch (only on the MAP tile, and only for hands not showing a named pose).
+    if (dashboardOpen && currentPage == DashboardPage.MAP) {
+      val pinchCandidates = resolved.filter { it.second == HandPose.NONE }.map { it.first.landmarks }
+      val pinch = detectMapPinch(pinchCandidates, timestampMs)
+      if (pinch.mapPinchActive) {
+        clearHold()
         clearSwipeState()
-        clearPinchState()
-        return handleClosedState(openPalmsCount, timestampMs)
+        return pinch.copy(activePose = HandPose.NONE)
       }
-      DashboardMode.QUICK_HOLD -> {
-        clearTwoFistsState()
-        clearSwipeState()
-        val twoPalmUpdate = updateTwoPalmHold(openPalmsCount, timestampMs)
-        if (twoPalmUpdate.openMode == DashboardMode.PERMANENT) {
-          onePalmHoldStartMs = null
-          lastOnePalmSeenMs = null
-          clearPinchState()
-          return twoPalmUpdate
-        }
-
-        val pinchUpdate =
-          if (currentPage == DashboardPage.MAP) {
-            detectMapPinch(hands, timestampMs)
-          } else {
-            clearPinchState()
-            GestureUpdate()
-          }
-
-        val handRaised =
-          openPalmsCount >= 1 ||
-            pinchUpdate.mapPinchActive ||
-            hands.any { it.size >= 21 && isSwipeOpenHand(it) }
-
-        return if (handRaised) {
-          lastOnePalmSeenMs = timestampMs
-          pinchUpdate.copy(palmHoldProgress = twoPalmUpdate.palmHoldProgress)
-        } else {
-          clearPinchState()
-          val lastSeen = lastOnePalmSeenMs
-          if (lastSeen == null || timestampMs - lastSeen > PALM_RELEASE_GRACE_MS) {
-            onePalmHoldStartMs = null
-            lastOnePalmSeenMs = null
-            twoPalmHoldStartMs = null
-            lastTwoPalmsSeenMs = null
-            GestureUpdate(shouldCloseDashboard = true)
-          } else {
-            GestureUpdate(palmHoldProgress = twoPalmUpdate.palmHoldProgress)
-          }
-        }
-      }
-      DashboardMode.QUICK_VOICE -> {
-        clearTwoFistsState()
-        clearSwipeState()
-        onePalmHoldStartMs = null
-        lastOnePalmSeenMs = null
-        val twoPalmUpdate = updateTwoPalmHold(openPalmsCount, timestampMs)
-        if (twoPalmUpdate.openMode == DashboardMode.PERMANENT) {
-          clearPinchState()
-          return twoPalmUpdate
-        }
-        val pinchUpdate =
-          if (currentPage == DashboardPage.MAP) {
-            detectMapPinch(hands, timestampMs)
-          } else {
-            clearPinchState()
-            GestureUpdate()
-          }
-        return pinchUpdate.copy(palmHoldProgress = twoPalmUpdate.palmHoldProgress)
-      }
-      DashboardMode.PERMANENT -> {
-        onePalmHoldStartMs = null
-        lastOnePalmSeenMs = null
-        twoPalmHoldStartMs = null
-        lastTwoPalmsSeenMs = null
-        val closeUpdate = handlePermanentCloseCheck(hands, closedFists, timestampMs)
-        if (closeUpdate.shouldCloseDashboard || closeUpdate.isTwoFistsReady) {
-          clearSwipeState()
-          clearPinchState()
-          return closeUpdate
-        }
-        if (currentPage == DashboardPage.MAP) {
-          val pinchUpdate = detectMapPinch(hands, timestampMs)
-          if (pinchUpdate.mapPinchActive) {
-            clearSwipeState()
-            return pinchUpdate
-          }
-        } else {
-          clearPinchState()
-        }
-        val swipeDirection = detectOpenHandSwipe(hands, timestampMs)
-        return if (swipeDirection != null) {
-          closeUpdate.copy(swipeDirection = swipeDirection)
-        } else {
-          closeUpdate
-        }
-      }
-    }
-  }
-
-  private fun handleClosedState(
-    openPalmsCount: Int,
-    timestampMs: Long,
-  ): GestureUpdate {
-    val twoPalmUpdate = updateTwoPalmHold(openPalmsCount, timestampMs)
-    if (twoPalmUpdate.openMode == DashboardMode.PERMANENT) {
-      onePalmHoldStartMs = null
-      lastOnePalmSeenMs = null
-      return twoPalmUpdate
-    }
-
-    if (twoPalmHoldStartMs != null) {
-      onePalmHoldStartMs = null
-      return twoPalmUpdate
-    }
-
-    if (openPalmsCount == 1) {
-      if (onePalmHoldStartMs == null) {
-        onePalmHoldStartMs = timestampMs
-      }
-      lastOnePalmSeenMs = timestampMs
-      val elapsed = (timestampMs - (onePalmHoldStartMs ?: timestampMs)).coerceAtLeast(0L)
-      val progress = (elapsed.toFloat() / PALM_HOLD_DURATION_MS.toFloat()).coerceIn(0f, 1f)
-      if (elapsed >= PALM_HOLD_DURATION_MS) {
-        onePalmHoldStartMs = null
-        return GestureUpdate(
-          palmHoldProgress = 0f,
-          openMode = DashboardMode.QUICK_HOLD,
-        )
-      }
-      return GestureUpdate(palmHoldProgress = progress)
     } else {
-      val lastSeen = lastOnePalmSeenMs
-      if (lastSeen == null || timestampMs - lastSeen > PALM_RELEASE_GRACE_MS) {
-        onePalmHoldStartMs = null
-        lastOnePalmSeenMs = null
-        return GestureUpdate(palmHoldProgress = 0f)
+      clearPinchState()
+    }
+
+    // 2. Swipe between tiles with an open hand.
+    if (dashboardOpen) {
+      val swipeHands =
+        resolved
+          .filter { (obs, pose) -> pose == HandPose.OPEN_PALM || isSwipeOpenHand(obs.landmarks) }
+          .map { it.first.landmarks }
+      val direction = detectOpenHandSwipe(swipeHands, timestampMs)
+      if (direction != null) {
+        clearHold()
+        val action = if (direction == SwipeDirection.NEXT) GestureAction.NEXT_TILE else GestureAction.PREVIOUS_TILE
+        return GestureUpdate(action = action, activePose = dominantPose)
       }
-      val start = onePalmHoldStartMs ?: return GestureUpdate(palmHoldProgress = 0f)
-      val progress =
-        ((timestampMs - start).coerceAtLeast(0L).toFloat() / PALM_HOLD_DURATION_MS.toFloat())
-          .coerceIn(0f, 1f)
-      return GestureUpdate(palmHoldProgress = progress)
+    } else {
+      clearSwipeState()
+    }
+
+    // 3. Held poses.
+    val action = actionFor(dominantPose, currentMode)
+    if (dominant == null || action == null || dominantPose == awaitingReleaseOf) {
+      if (timestampMs - holdLastSeenMs > HOLD_GAP_GRACE_MS) clearHold()
+      return GestureUpdate(activePose = dominantPose)
+    }
+
+    val cx = handCenterX(dominant.first.landmarks)
+    val cy = handCenterY(dominant.first.landmarks)
+    val sameHold =
+      heldPose == dominantPose &&
+        timestampMs - holdLastSeenMs <= HOLD_GAP_GRACE_MS &&
+        hypot(cx - holdStartX, cy - holdStartY) <= HOLD_MAX_TRAVEL
+    if (!sameHold) {
+      heldPose = dominantPose
+      holdStartMs = timestampMs
+      holdStartX = cx
+      holdStartY = cy
+    }
+    holdLastSeenMs = timestampMs
+
+    val needed = holdDurationFor(action)
+    val progress = ((timestampMs - holdStartMs).toFloat() / needed).coerceIn(0f, 1f)
+    if (progress >= 1f) {
+      awaitingReleaseOf = dominantPose
+      clearHold()
+      cooldownUntilMs = timestampMs + ACTION_COOLDOWN_MS
+      return GestureUpdate(action = action, activePose = dominantPose)
+    }
+    return GestureUpdate(pendingAction = action, holdProgress = progress, activePose = dominantPose)
+  }
+
+  private fun clearHold() {
+    heldPose = HandPose.NONE
+    holdStartMs = 0L
+    holdLastSeenMs = 0L
+  }
+
+  internal fun resolvePose(obs: HandObservation): HandPose {
+    if (obs.pose != HandPose.NONE && obs.poseScore >= MIN_POSE_SCORE) return obs.pose
+    val lm = obs.landmarks
+    return when {
+      isOpenPalmUp(lm) -> HandPose.OPEN_PALM
+      isClosedFist(lm) -> HandPose.CLOSED_FIST
+      else -> HandPose.NONE
     }
   }
 
-  private fun detectMapPinch(
-    hands: List<List<HandLandmarkPoint>>,
-    timestampMs: Long,
-  ): GestureUpdate {
+  private fun actionFor(pose: HandPose, mode: DashboardMode): GestureAction? {
+    val open = mode != DashboardMode.CLOSED
+    return when (pose) {
+      HandPose.OPEN_PALM -> if (!open) GestureAction.OPEN_DASHBOARD else null
+      HandPose.CLOSED_FIST -> if (open) GestureAction.CLOSE_DASHBOARD else null
+      HandPose.POINTING_UP -> if (open) GestureAction.RECENTER else null
+      HandPose.THUMB_UP -> GestureAction.ACKNOWLEDGE
+      HandPose.VICTORY -> if (open) GestureAction.TOGGLE_EYE_PREVIEW else null
+      HandPose.THUMB_DOWN -> GestureAction.CLEAR_DRILL
+      HandPose.I_LOVE_YOU,
+      HandPose.NONE -> null
+    }
+  }
+
+  private fun holdDurationFor(action: GestureAction): Float =
+    when (action) {
+      GestureAction.ACKNOWLEDGE -> 400f
+      GestureAction.RECENTER -> 500f
+      GestureAction.CLEAR_DRILL -> 900f
+      else -> 600f
+    }
+
+  private fun detectMapPinch(hands: List<List<HandLandmarkPoint>>, timestampMs: Long): GestureUpdate {
     val pinchHands = hands.filter { it.size >= 21 && isThumbIndexPinch(it) }
     val activePinch =
       when {
         pinchHands.size == 1 -> pinchHands[0]
-        pinchHands.size > 1 && pinchLastSeenMs != null ->
-          pinchHands.minByOrNull { abs(pinchPointX(it) - pinchLastX) }
+        pinchHands.size > 1 && pinchLastSeenMs != null -> pinchHands.minByOrNull { abs(pinchPointX(it) - pinchLastX) }
         else -> null
       }
 
     if (activePinch == null) {
       val lastSeen = pinchLastSeenMs
-      if (lastSeen == null || timestampMs - lastSeen > PINCH_GAP_RESET_MS) {
-        clearPinchState()
-      }
+      if (lastSeen == null || timestampMs - lastSeen > PINCH_GAP_RESET_MS) clearPinchState()
       return GestureUpdate()
     }
 
@@ -328,164 +355,22 @@ class HandGestureClassifier {
     pinchLastSeenMs = null
   }
 
-  private fun updateTwoPalmHold(openPalmsCount: Int, timestampMs: Long): GestureUpdate {
-    if (openPalmsCount >= 2) {
-      if (twoPalmHoldStartMs == null) {
-        twoPalmHoldStartMs = timestampMs
-      }
-      lastTwoPalmsSeenMs = timestampMs
-      val elapsed = (timestampMs - (twoPalmHoldStartMs ?: timestampMs)).coerceAtLeast(0L)
-      val progress = (elapsed.toFloat() / PALM_HOLD_DURATION_MS.toFloat()).coerceIn(0f, 1f)
-      if (elapsed >= PALM_HOLD_DURATION_MS) {
-        twoPalmHoldStartMs = null
-        lastTwoPalmsSeenMs = null
-        cooldownUntilMs = timestampMs + TRANSITION_COOLDOWN_MS
-        return GestureUpdate(palmHoldProgress = 0f, openMode = DashboardMode.PERMANENT)
-      }
-      return GestureUpdate(palmHoldProgress = progress)
-    } else {
-      val lastSeen = lastTwoPalmsSeenMs
-      if (lastSeen == null || timestampMs - lastSeen > PALM_RELEASE_GRACE_MS) {
-        twoPalmHoldStartMs = null
-        lastTwoPalmsSeenMs = null
-        return GestureUpdate(palmHoldProgress = 0f)
-      }
-      val start = twoPalmHoldStartMs ?: return GestureUpdate(palmHoldProgress = 0f)
-      val progress =
-        ((timestampMs - start).coerceAtLeast(0L).toFloat() / PALM_HOLD_DURATION_MS.toFloat())
-          .coerceIn(0f, 1f)
-      return GestureUpdate(palmHoldProgress = progress)
-    }
-  }
-
-  private fun handlePermanentCloseCheck(
-    allHands: List<List<HandLandmarkPoint>>,
-    closedFists: List<List<HandLandmarkPoint>>,
-    timestampMs: Long,
-  ): GestureUpdate {
-    if (closedFists.size >= 2) {
-      val sorted = closedFists.sortedBy { it[WRIST].x }
-      val leftWrist = sorted.first()[WRIST]
-      val rightWrist = sorted.last()[WRIST]
-
-      if (twoFistsArmedAtMs == null) {
-        twoFistsArmedAtMs = timestampMs
-        minLeftFistY = leftWrist.y
-        minRightFistY = rightWrist.y
-      } else {
-        minLeftFistY = min(minLeftFistY, leftWrist.y)
-        minRightFistY = min(minRightFistY, rightWrist.y)
-      }
-      lastTwoFistsSeenMs = timestampMs
-      lastLeftFistX = leftWrist.x
-      lastLeftFistY = leftWrist.y
-      lastRightFistX = rightWrist.x
-      lastRightFistY = rightWrist.y
-
-      if (checkTwoFistsCloseReady(timestampMs)) {
-        clearTwoFistsState()
-        cooldownUntilMs = timestampMs + TRANSITION_COOLDOWN_MS
-        return GestureUpdate(isTwoFistsReady = false, shouldCloseDashboard = true)
-      }
-      return GestureUpdate(isTwoFistsReady = true)
-    }
-
-    val lastSeen = lastTwoFistsSeenMs
-    if (twoFistsArmedAtMs != null && lastSeen != null && timestampMs - lastSeen <= FIST_DROP_GRACE_MS) {
-      val candidates =
-        if (closedFists.isNotEmpty()) {
-          closedFists
-        } else {
-          allHands.filter { it.size >= 21 && !isOpenPalmUp(it) }
-        }
-
-      for (hand in candidates) {
-        val wrist = hand[WRIST]
-        val distToLeft = abs(wrist.x - lastLeftFistX)
-        val distToRight = abs(wrist.x - lastRightFistX)
-        if (distToLeft <= distToRight) {
-          lastLeftFistX = wrist.x
-          lastLeftFistY = wrist.y
-          minLeftFistY = min(minLeftFistY, wrist.y)
-        } else {
-          lastRightFistX = wrist.x
-          lastRightFistY = wrist.y
-          minRightFistY = min(minRightFistY, wrist.y)
-        }
-      }
-
-      if (checkTwoFistsCloseReady(timestampMs, allowBottomExit = true)) {
-        clearTwoFistsState()
-        cooldownUntilMs = timestampMs + TRANSITION_COOLDOWN_MS
-        return GestureUpdate(isTwoFistsReady = false, shouldCloseDashboard = true)
-      }
-
-      return GestureUpdate(isTwoFistsReady = true)
-    }
-
-    clearTwoFistsState()
-    return GestureUpdate(isTwoFistsReady = false)
-  }
-
-  private fun checkTwoFistsCloseReady(
-    timestampMs: Long,
-    allowBottomExit: Boolean = false,
-  ): Boolean {
-    val armedAt = twoFistsArmedAtMs ?: return false
-    if (timestampMs - armedAt < MIN_FISTS_ARMED_MS) return false
-
-    val leftDrop = lastLeftFistY - minLeftFistY
-    val rightDrop = lastRightFistY - minRightFistY
-    if (leftDrop >= FIST_LOWER_THRESHOLD_Y && rightDrop >= FIST_LOWER_THRESHOLD_Y) {
-      return true
-    }
-
-    if (allowBottomExit) {
-      val exitedBottomTogether =
-        leftDrop >= FIST_EXIT_MIN_DROP_Y &&
-          rightDrop >= FIST_EXIT_MIN_DROP_Y &&
-          lastLeftFistY >= FIST_BOTTOM_EXIT_Y &&
-          lastRightFistY >= FIST_BOTTOM_EXIT_Y
-      if (exitedBottomTogether) return true
-    }
-
-    return false
-  }
-
-  private fun clearTwoFistsState() {
-    twoFistsArmedAtMs = null
-    lastTwoFistsSeenMs = null
-    minLeftFistY = 1f
-    minRightFistY = 1f
-    lastLeftFistX = 0.3f
-    lastRightFistX = 0.7f
-    lastLeftFistY = 0f
-    lastRightFistY = 0f
-  }
-
-  private fun detectOpenHandSwipe(
-    hands: List<List<HandLandmarkPoint>>,
-    timestampMs: Long,
-  ): SwipeDirection? {
+  private fun detectOpenHandSwipe(hands: List<List<HandLandmarkPoint>>, timestampMs: Long): SwipeDirection? {
     if (timestampMs < swipeCooldownUntilMs) {
       clearSwipeState()
       return null
     }
 
-    val openHands = hands.filter { it.size >= 21 && isSwipeOpenHand(it) }
     val activeHand =
       when {
-        openHands.size == 1 -> openHands[0]
-        openHands.size > 1 && swipeStartMs != null ->
-          openHands.minByOrNull { abs(handCenterX(it) - swipeLastX) }
+        hands.size == 1 -> hands[0]
+        hands.size > 1 && swipeStartMs != null -> hands.minByOrNull { abs(handCenterX(it) - swipeLastX) }
         else -> null
       }
 
     if (activeHand == null) {
       val lastSeen = swipeLastSeenMs
-      if (lastSeen == null || timestampMs - lastSeen > SWIPE_GAP_RESET_MS) {
-        clearSwipeState()
-      }
+      if (lastSeen == null || timestampMs - lastSeen > SWIPE_GAP_RESET_MS) clearSwipeState()
       return null
     }
 
@@ -510,11 +395,7 @@ class HandGestureClassifier {
 
     val overallDelta = swipeLastX - swipeStartX
     val stepDelta = palmX - swipeLastX
-    if (
-      abs(overallDelta) >= SWIPE_REVERSAL_ARM_X &&
-        overallDelta * stepDelta < 0f &&
-        abs(stepDelta) >= 0.012f
-    ) {
+    if (abs(overallDelta) >= SWIPE_REVERSAL_ARM_X && overallDelta * stepDelta < 0f && abs(stepDelta) >= 0.012f) {
       swipeStartMs = lastSeen
       swipeStartX = swipeLastX
       swipeStartY = palmY
@@ -530,7 +411,6 @@ class HandGestureClassifier {
       swipeCooldownUntilMs = timestampMs + SWIPE_COOLDOWN_MS
       return if (deltaX < 0f) SwipeDirection.PREVIOUS else SwipeDirection.NEXT
     }
-
     return null
   }
 
@@ -542,29 +422,18 @@ class HandGestureClassifier {
     swipeLastSeenMs = null
   }
 
-  private fun handCenterX(landmarks: List<HandLandmarkPoint>): Float {
-    return (landmarks[WRIST].x + landmarks[MIDDLE_MCP].x) * 0.5f
-  }
+  private fun handCenterX(landmarks: List<HandLandmarkPoint>): Float = (landmarks[WRIST].x + landmarks[MIDDLE_MCP].x) * 0.5f
 
-  private fun handCenterY(landmarks: List<HandLandmarkPoint>): Float {
-    return (landmarks[WRIST].y + landmarks[MIDDLE_MCP].y) * 0.5f
-  }
+  private fun handCenterY(landmarks: List<HandLandmarkPoint>): Float = (landmarks[WRIST].y + landmarks[MIDDLE_MCP].y) * 0.5f
 
-  private fun pinchPointX(landmarks: List<HandLandmarkPoint>): Float {
-    return (landmarks[THUMB_TIP].x + landmarks[INDEX_TIP].x) * 0.5f
-  }
+  private fun pinchPointX(landmarks: List<HandLandmarkPoint>): Float = (landmarks[THUMB_TIP].x + landmarks[INDEX_TIP].x) * 0.5f
 
-  private fun pinchPointY(landmarks: List<HandLandmarkPoint>): Float {
-    return (landmarks[THUMB_TIP].y + landmarks[INDEX_TIP].y) * 0.5f
-  }
+  private fun pinchPointY(landmarks: List<HandLandmarkPoint>): Float = (landmarks[THUMB_TIP].y + landmarks[INDEX_TIP].y) * 0.5f
 
-  private fun pinchPointZ(landmarks: List<HandLandmarkPoint>): Float {
-    return (landmarks[THUMB_TIP].z + landmarks[INDEX_TIP].z) * 0.5f
-  }
+  private fun pinchPointZ(landmarks: List<HandLandmarkPoint>): Float = (landmarks[THUMB_TIP].z + landmarks[INDEX_TIP].z) * 0.5f
 
   private fun handPalmScale(landmarks: List<HandLandmarkPoint>): Float {
-    val wrist = landmarks[WRIST]
-    val palmHeight = dist2D(wrist, landmarks[MIDDLE_MCP])
+    val palmHeight = dist2D(landmarks[WRIST], landmarks[MIDDLE_MCP])
     val palmWidth = dist2D(landmarks[INDEX_MCP], landmarks[PINKY_MCP])
     return maxOf(palmHeight, palmWidth)
   }
@@ -574,10 +443,8 @@ class HandGestureClassifier {
     val palmScale = handPalmScale(landmarks)
     if (palmScale < MIN_PALM_SIZE) return false
     if (isClosedFist(landmarks) || isOpenPalmUp(landmarks)) return false
-
     val pinchGap = dist2D(landmarks[THUMB_TIP], landmarks[INDEX_TIP])
     if (pinchGap > palmScale * PINCH_MAX_GAP_RATIO) return false
-
     val wrist = landmarks[WRIST]
     val otherCurledCount =
       listOf(
@@ -591,10 +458,8 @@ class HandGestureClassifier {
   internal fun isSwipeOpenHand(landmarks: List<HandLandmarkPoint>): Boolean {
     if (landmarks.size < 21) return false
     val wrist = landmarks[WRIST]
-    val palmScale = handPalmScale(landmarks)
-    if (palmScale < MIN_PALM_SIZE) return false
+    if (handPalmScale(landmarks) < MIN_PALM_SIZE) return false
     if (isClosedFist(landmarks)) return false
-
     val extendedCount =
       listOf(
         isFingerExtendedAnyAngle(wrist, landmarks[INDEX_MCP], landmarks[INDEX_PIP], landmarks[INDEX_TIP]),
@@ -602,7 +467,6 @@ class HandGestureClassifier {
         isFingerExtendedAnyAngle(wrist, landmarks[RING_MCP], landmarks[RING_PIP], landmarks[RING_TIP]),
         isFingerExtendedAnyAngle(wrist, landmarks[PINKY_MCP], landmarks[PINKY_PIP], landmarks[PINKY_TIP]),
       ).count { it }
-
     return extendedCount >= 3
   }
 
@@ -613,9 +477,7 @@ class HandGestureClassifier {
     tip: HandLandmarkPoint,
   ): Boolean {
     val wristToTip = dist2D(wrist, tip)
-    val wristToPip = dist2D(wrist, pip)
-    val wristToMcp = dist2D(wrist, mcp)
-    return wristToTip > wristToMcp * 1.15f && wristToTip > wristToPip * 1.02f
+    return wristToTip > dist2D(wrist, mcp) * 1.15f && wristToTip > dist2D(wrist, pip) * 1.02f
   }
 
   internal fun isOpenPalmUp(landmarks: List<HandLandmarkPoint>): Boolean {
@@ -624,17 +486,13 @@ class HandGestureClassifier {
     val middleMcp = landmarks[MIDDLE_MCP]
     val palmSize = dist2D(wrist, middleMcp)
     if (palmSize < MIN_PALM_SIZE) return false
-
     if (middleMcp.y - wrist.y > -0.28f * palmSize) return false
-
     val fingersExtended =
       isFingerExtendedUpright(wrist, landmarks[INDEX_MCP], landmarks[INDEX_PIP], landmarks[INDEX_TIP]) &&
         isFingerExtendedUpright(wrist, landmarks[MIDDLE_MCP], landmarks[MIDDLE_PIP], landmarks[MIDDLE_TIP]) &&
         isFingerExtendedUpright(wrist, landmarks[RING_MCP], landmarks[RING_PIP], landmarks[RING_TIP]) &&
         isFingerExtendedUpright(wrist, landmarks[PINKY_MCP], landmarks[PINKY_PIP], landmarks[PINKY_TIP])
-
     if (!fingersExtended) return false
-
     val thumbToPinkyMcp = dist2D(landmarks[THUMB_TIP], landmarks[PINKY_MCP])
     val thumbToIndexMcp = dist2D(landmarks[THUMB_TIP], landmarks[INDEX_MCP])
     return thumbToPinkyMcp > palmSize * 0.85f && thumbToIndexMcp > palmSize * 0.40f
@@ -645,9 +503,7 @@ class HandGestureClassifier {
     val wrist = landmarks[WRIST]
     val palmScale = handPalmScale(landmarks)
     if (palmScale < MIN_PALM_SIZE) return false
-
     if (isOpenPalmUp(landmarks)) return false
-
     val curledFingers =
       listOf(
         isFingerCurledForgiving(wrist, landmarks[INDEX_MCP], landmarks[INDEX_PIP], landmarks[INDEX_TIP], palmScale),
@@ -655,7 +511,6 @@ class HandGestureClassifier {
         isFingerCurledForgiving(wrist, landmarks[RING_MCP], landmarks[RING_PIP], landmarks[RING_TIP], palmScale),
         isFingerCurledForgiving(wrist, landmarks[PINKY_MCP], landmarks[PINKY_PIP], landmarks[PINKY_TIP], palmScale),
       ).count { it }
-
     return curledFingers >= 3
   }
 
@@ -666,9 +521,7 @@ class HandGestureClassifier {
     tip: HandLandmarkPoint,
   ): Boolean {
     val wristToTip = dist2D(wrist, tip)
-    val wristToPip = dist2D(wrist, pip)
-    val wristToMcp = dist2D(wrist, mcp)
-    return wristToTip > wristToPip * 1.10f && wristToTip > wristToMcp * 1.28f && tip.y < mcp.y
+    return wristToTip > dist2D(wrist, pip) * 1.10f && wristToTip > dist2D(wrist, mcp) * 1.28f && tip.y < mcp.y
   }
 
   private fun isFingerCurledForgiving(
@@ -679,22 +532,17 @@ class HandGestureClassifier {
     palmScale: Float,
   ): Boolean {
     val wristToTip = dist2D(wrist, tip)
-    val wristToPip = dist2D(wrist, pip)
-    val mcpToTip = dist2D(mcp, tip)
-    return (wristToTip <= wristToPip * 1.22f || mcpToTip <= palmScale * 1.15f) &&
+    return (wristToTip <= dist2D(wrist, pip) * 1.22f || dist2D(mcp, tip) <= palmScale * 1.15f) &&
       wristToTip < palmScale * 1.85f
   }
 
-  private fun dist2D(a: HandLandmarkPoint, b: HandLandmarkPoint): Float {
-    return hypot(a.x - b.x, a.y - b.y)
-  }
+  private fun dist2D(a: HandLandmarkPoint, b: HandLandmarkPoint): Float = hypot(a.x - b.x, a.y - b.y)
 
   companion object {
-    const val PALM_HOLD_DURATION_MS = 800L
-    const val PALM_RELEASE_GRACE_MS = 150L
-    const val FIST_DROP_GRACE_MS = 650L
-    const val MIN_FISTS_ARMED_MS = 80L
-    const val TRANSITION_COOLDOWN_MS = 600L
+    const val MIN_POSE_SCORE = 0.55f
+    const val HOLD_GAP_GRACE_MS = 350L
+    const val HOLD_MAX_TRAVEL = 0.09f
+    const val ACTION_COOLDOWN_MS = 650L
 
     const val PINCH_MAX_GAP_RATIO = 0.45f
     const val PINCH_GAP_RESET_MS = 260L
@@ -711,9 +559,6 @@ class HandGestureClassifier {
     private const val SWIPE_HORIZONTAL_RATIO = 1.15f
 
     private const val MIN_PALM_SIZE = 0.030f
-    private const val FIST_LOWER_THRESHOLD_Y = 0.08f
-    private const val FIST_EXIT_MIN_DROP_Y = 0.05f
-    private const val FIST_BOTTOM_EXIT_Y = 0.62f
 
     private const val WRIST = 0
     private const val THUMB_TIP = 4

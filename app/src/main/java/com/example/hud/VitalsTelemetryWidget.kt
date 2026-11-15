@@ -64,6 +64,8 @@ fun VitalsTelemetryWidget(
   coreTempCelsius: Float = 37.1f,
   hydrationPercent: Int = 74,
   isBiometricSensorLost: Boolean = false,
+  cognitiveLoad: Int? = null,
+  cognitiveLevel: com.example.mental.CognitiveLevel = com.example.mental.CognitiveLevel.NOMINAL,
 ) {
   var microOffset by remember { mutableIntStateOf(0) }
 
@@ -100,7 +102,7 @@ fun VitalsTelemetryWidget(
       label = "ecg_phase",
     )
 
-  val cardShape = RoundedCornerShape(22.dp)
+  val cardShape = RoundedCornerShape(24.dp)
   val frostedGlassBrush =
     Brush.linearGradient(
       colors =
@@ -123,7 +125,7 @@ fun VitalsTelemetryWidget(
   Box(
     modifier =
       modifier
-        .width(206.dp)
+        .width(224.dp)
         .testTag("vitals_hud_widget")
         .clip(cardShape)
         .background(frostedGlassBrush)
@@ -233,6 +235,14 @@ fun VitalsTelemetryWidget(
           valueColor = if (hydrationPercent < 35) IosSfRed else IosSfIndigo,
           valueTag = "vitals_h2o_text",
         )
+        if (cognitiveLoad != null) {
+          TelemetryCell(
+            label = "LOAD",
+            value = "$cognitiveLoad",
+            valueColor = levelColor(cognitiveLevel),
+            valueTag = "vitals_load_text",
+          )
+        }
       }
     }
   }
