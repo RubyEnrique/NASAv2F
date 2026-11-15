@@ -456,6 +456,14 @@ fun MarsMolaMapCanvas(
             max(acc, max(dx, dy))
           }
           .coerceAtLeast(35f)
+          .let { ext ->
+            // Fit crewmates too (up to 500 m) so they are not drawn off the edge of the map.
+            crew.fold(ext) { acc, m ->
+              val e = m.eastMeters ?: return@fold acc
+              val n = m.northMeters ?: return@fold acc
+              max(acc, max(kotlin.math.abs(e), kotlin.math.abs(n)).coerceAtMost(500f) * 1.15f)
+            }
+          }
       val pxPerMeter = ((kotlin.math.min(w, h) * 0.36f) / maxExtentMeters) * animatedZoom
       val roverCenter =
         Offset(
@@ -533,7 +541,13 @@ fun MarsMolaMapCanvas(
       for (m in crew) {
         val e = m.eastMeters ?: continue
         val n = m.northMeters ?: continue
-        val p = Offset(roverCenter.x + e * pxPerMeter, roverCenter.y - n * pxPerMeter)
+        val margin = 6.dp.toPx()
+        // Beyond the fitted range (or zoomed in): pin to the map edge in the right direction.
+        val p =
+          Offset(
+            (roverCenter.x + e * pxPerMeter).coerceIn(margin, w - margin),
+            (roverCenter.y - n * pxPerMeter).coerceIn(margin, h - margin),
+          )
         val c = if (m.emergency) IosSfRed else SpecularWhite
         drawCircle(c.copy(alpha = 0.3f), 9.dp.toPx(), p)
         drawCircle(c, 4.dp.toPx(), p)

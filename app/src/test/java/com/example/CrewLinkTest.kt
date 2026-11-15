@@ -83,6 +83,23 @@ class CrewLinkTest {
     assertEquals(555.0f, m[0].distanceMeters!!, 2f)
     assertEquals(listOf("B"), r.members(21_000L, 18.38, 77.58).map { it.id })
     assertNull(r.members(21_000L, null, null)[0].distanceMeters)
+    assertTrue("B sent a position even though this HUD has none", r.members(21_000L, null, null)[0].sentPosition)
+  }
+
+  @Test
+  fun linkedCrewWithoutPosition_saysWhichPhoneLacksGps() {
+    val vm = HudViewModel(enablePeriodicDecay = false)
+    vm.setCrewIdentity("ME", "Crew-ME")
+    vm.onLocationPermissionResult(true)
+    vm.onCrewLinkChanged(com.example.crew.CrewLinkStats(active = true))
+    vm.onCrewPacket(status("B", null, null), 1_000L)
+    assertEquals("Crew 1 linked · no GPS on either phone", com.example.hud.crewSummary(vm.uiState.value))
+    vm.onAbsoluteFix(18.38, 77.58, 120f) // coarse indoor fix is still shared
+    assertEquals(120f, vm.uiState.value.crewFixAccuracyMeters)
+    assertEquals("Crew 1 linked · no GPS from Crew-B", com.example.hud.crewSummary(vm.uiState.value))
+    assertTrue(com.example.hud.crewDiagnostics(vm.uiState.value).endsWith("gps ±120 m"))
+    vm.onCrewPacket(status("B", 18.381, 77.58), 2_000L)
+    assertEquals("Crew 1 · nearest 111 m", com.example.hud.crewSummary(vm.uiState.value))
   }
 
   @Test

@@ -115,7 +115,7 @@ internal fun GlanceStrip(s: HudUiState, modifier: Modifier = Modifier) {
         when {
           nearest == null -> "searching"
           nearest.distanceMeters != null -> "${nearest.distanceMeters.roundToInt()} m"
-          else -> "linked"
+          else -> "no GPS"
         },
         if (help != null) Ios.Red else Vision.Text2,
         "glance_crew_text",

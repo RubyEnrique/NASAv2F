@@ -38,6 +38,8 @@ data class CrewMember(
   val emergency: Boolean,
   val reason: String,
   val lastSeenMs: Long,
+  /** True when the crewmate sent a GPS position (distance still needs this HUD's own fix too). */
+  val sentPosition: Boolean = false,
 )
 
 object CrewPacket {
@@ -128,6 +130,7 @@ class CrewRoster(private val selfId: String, private val staleMs: Long = 20_000L
           emergency = s.emergency,
           reason = s.reason,
           lastSeenMs = seen,
+          sentPosition = s.lat != null && s.lon != null,
         )
       }
       .sortedWith(compareByDescending<CrewMember> { it.emergency }.thenBy { it.distanceMeters ?: Float.MAX_VALUE })

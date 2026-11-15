@@ -156,6 +156,8 @@ data class HudUiState(
   val crewLink: CrewLinkStats = CrewLinkStats(),
   val crewSelfName: String = "",
   val hasAbsoluteFix: Boolean = false,
+  /** Accuracy (m) of the last position shared with the crew; null = never had one. */
+  val crewFixAccuracyMeters: Float? = null,
   val lastSwipeDirection: SwipeDirection? = null,
   val swipeCueId: Long = 0L,
 ) {
@@ -424,12 +426,13 @@ class HudViewModel(
     _uiState.update { it.copy(crewSelfName = name) }
   }
 
-  fun onAbsoluteFix(lat: Double, lon: Double) {
+  fun onAbsoluteFix(lat: Double, lon: Double, accuracyMeters: Float = 0f) {
     synchronized(crewLock) {
       selfLat = lat
       selfLon = lon
     }
-    if (!_uiState.value.hasAbsoluteFix) _uiState.update { it.copy(hasAbsoluteFix = true) }
+    val acc = accuracyMeters.roundToInt().toFloat()
+    _uiState.update { if (it.hasAbsoluteFix && it.crewFixAccuracyMeters == acc) it else it.copy(hasAbsoluteFix = true, crewFixAccuracyMeters = acc) }
   }
 
   fun onCrewLinkChanged(stats: CrewLinkStats) {
@@ -469,7 +472,12 @@ class HudViewModel(
 
   /** Recomputes crew distances/bearings and announces any crewmate who newly needs help. */
   internal fun refreshCrew(nowMs: Long) {
-    val members = synchronized(crewLock) { crewRoster.members(nowMs, selfLat, selfLon) }
+    // Called from the UDP receive thread and the 1 s tick: the whole method holds crewLock.
+    synchronized(crewLock) { refreshCrewLocked(nowMs) }
+  }
+
+  private fun refreshCrewLocked(nowMs: Long) {
+    val members = crewRoster.members(nowMs, selfLat, selfLon)
     _uiState.update { it.copy(crew = members) }
     for (m in members.filter { it.emergency }) {
       val last = crewEmergencyAnnouncedMs[m.id]

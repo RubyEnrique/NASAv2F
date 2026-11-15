@@ -29,7 +29,7 @@ class GpsDistanceMonitor(
   private val onLocationSample: (deltaMeters: Float, speedMps: Float, timestampMs: Long) -> Unit,
   private val onFixStatusChanged: (Boolean) -> Unit = {},
   private val onVectorDelta: (deltaEastMeters: Float, deltaNorthMeters: Float) -> Unit = { _, _ -> },
-  private val onAbsoluteFix: (lat: Double, lon: Double) -> Unit = { _, _ -> },
+  private val onAbsoluteFix: (lat: Double, lon: Double, accuracyMeters: Float) -> Unit = { _, _, _ -> },
 ) {
 
   private val appContext = context.applicationContext
@@ -181,7 +181,9 @@ class GpsDistanceMonitor(
 
   private fun handleLocation(location: Location, nowMs: Long) {
     val accuracy = if (location.hasAccuracy()) location.accuracy else Float.MAX_VALUE
-    if (accuracy <= MAX_INDOOR_ACCURACY_METERS) onAbsoluteFix(location.latitude, location.longitude)
+    // Crew sharing takes coarser fixes than distance tracking: an approximate crewmate position
+    // (indoors, Wi-Fi/cell based) is far more useful than none.
+    if (accuracy <= MAX_CREW_SHARE_ACCURACY_METERS) onAbsoluteFix(location.latitude, location.longitude, accuracy)
     val rawSpeed = if (location.hasSpeed()) location.speed else -1f
 
     // Ignore out-of-order fixes older than the current anchor.
@@ -243,6 +245,7 @@ class GpsDistanceMonitor(
 
     const val MAX_ACCEPTED_ACCURACY_METERS = 25f
     const val MAX_INDOOR_ACCURACY_METERS = 65f
+    const val MAX_CREW_SHARE_ACCURACY_METERS = 250f
     const val MIN_MOVEMENT_DELTA_METERS = 2.5f
     const val MAX_PLAUSIBLE_SPEED_MPS = 35f
     const val MIN_MOVING_SPEED_MPS = 0.4f

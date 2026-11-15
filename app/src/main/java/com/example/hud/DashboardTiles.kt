@@ -391,14 +391,28 @@ internal fun crewSummary(s: HudUiState): String {
     help != null -> "${help.name} needs help" + (help.distanceMeters?.let { " · ${it.roundToInt()} m" } ?: " · no GPS")
     s.crew.isEmpty() -> "Crew: searching on Wi-Fi"
     nearest != null -> "Crew ${s.crew.size} · nearest ${nearest.distanceMeters!!.roundToInt()} m"
-    else -> "Crew ${s.crew.size} linked · waiting for GPS to map"
+    else -> "Crew ${s.crew.size} linked · " + crewPositionGap(s)
+  }
+}
+
+/** Why crewmates are linked but cannot be placed on the map / compass: which phone lacks GPS. */
+internal fun crewPositionGap(s: HudUiState): String {
+  val selfHasFix = s.crewFixAccuracyMeters != null
+  val peersWithout = s.crew.filter { !it.sentPosition }
+  return when {
+    !s.hasLocationPermission -> "allow location on this phone"
+    !selfHasFix && peersWithout.isNotEmpty() -> "no GPS on either phone"
+    !selfHasFix -> "no GPS on this phone"
+    peersWithout.isNotEmpty() -> "no GPS from " + peersWithout.joinToString { it.name }
+    else -> "waiting for GPS"
   }
 }
 
 /** Field diagnostics for the crew link: proves whether this phone or the network is the problem. */
 internal fun crewDiagnostics(s: HudUiState): String {
   val l = s.crewLink
-  return "${s.crewSelfName} · ${l.localIp} · sent ${l.sent} · self ${if (l.heardSelf > 0) "ok" else "none"} · peers ${l.heardOthers}" +
+  val gps = s.crewFixAccuracyMeters?.let { "gps ±${it.roundToInt()} m" } ?: "gps none"
+  return "${s.crewSelfName} · ${l.localIp} · sent ${l.sent} · self ${if (l.heardSelf > 0) "ok" else "none"} · peers ${l.heardOthers} · $gps" +
     (l.error?.let { " · $it" } ?: "")
 }
 
@@ -498,6 +512,10 @@ private fun EnvironmentBody(s: HudUiState, onRequestLocationPermission: () -> Un
             Text("Enable GPS", style = hudText(9.sp, Color.White))
           }
         }
+      }
+      // Crew on the map: say why a linked crewmate has no dot instead of silently hiding them.
+      if (s.crewLink.active && s.crew.isNotEmpty()) {
+        SmallNote(crewSummary(s), if (s.crew.any { it.emergency }) Ios.Red else Vision.Text2, tag = "map_crew_text")
       }
     }
     Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(Gap)) {
