@@ -196,3 +196,8 @@ The HUD blocks Back and Home on purpose. To exit, **tap the top-right corner 5 t
   space-weather data. The default `DEMO_KEY` is heavily rate-limited.
 - Crew link uses UDP port **47811**: broadcast, multicast group `239.255.47.11`, and direct
   unicast to known peers.
+
+## 12. Web version (no install)
+
+A browser version lives in `web/`. It runs from a link on a phone or laptop, using that device's
+camera and microphone. See `web/README.md` for running it and deploying it to Vercel.
