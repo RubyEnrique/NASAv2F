@@ -119,11 +119,11 @@ fun SpatialHudScreen(
 ) {
   val blurRadius by
     animateFloatAsState(
-      targetValue = if (uiState.hasCameraPermission && uiState.isDashboardOpen) 34f else 0f,
+      targetValue = if (uiState.hasCameraPermission && uiState.isDashboardOpen) 16f else 0f,
       animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow),
       label = "backdrop_blur_radius",
     )
-  val telemetryAlpha by animateFloatAsState(if (uiState.isDashboardOpen) 0.30f else 1f, tween(260), label = "telemetry_alpha")
+  val telemetryAlpha by animateFloatAsState(if (uiState.isDashboardOpen) 0f else 1f, tween(260), label = "telemetry_alpha")
   val density = LocalDensity.current.density
 
   // Eye preview frames live only in the UI layer (never in ViewModel state).
@@ -161,40 +161,9 @@ fun SpatialHudScreen(
       )
 
       Box(modifier = Modifier.fillMaxSize().displayCutoutPadding()) {
-        VitalsTelemetryWidget(
-          heartRateBpm = uiState.heartRateBpm,
-          systolicBp = uiState.systolicBp,
-          diastolicBp = uiState.diastolicBp,
-          spo2Percent = uiState.spo2Percent,
-          coreTempCelsius = uiState.coreTempCelsius,
-          hydrationPercent = uiState.hydrationPercent,
-          isBiometricSensorLost = uiState.isBiometricSensorLost,
-          cognitiveLoad = uiState.cognitive.index,
-          cognitiveLevel = uiState.cognitive.level,
-          modifier =
-            Modifier.align(Alignment.BottomStart).padding(start = 18.dp, bottom = 16.dp).graphicsLayer {
-              alpha = telemetryAlpha
-              rotationY = 14f
-              rotationX = 4f
-              cameraDistance = 14f * density
-              transformOrigin = TransformOrigin(0f, 0.5f)
-            },
-        )
-
-        SuitTelemetryWidget(
-          suit = uiState.suit,
-          doseRateUsvPerHour = uiState.radiation.doseRateUsvPerHour,
-          radiationStatus = uiState.radiation.status,
-          evaSeconds = uiState.evaSeconds,
-          modifier =
-            Modifier.align(Alignment.BottomEnd).padding(end = 18.dp, bottom = 16.dp).graphicsLayer {
-              alpha = telemetryAlpha
-              rotationY = -14f
-              rotationX = 4f
-              cameraDistance = 14f * density
-              transformOrigin = TransformOrigin(1f, 0.5f)
-            },
-        )
+        // Ambient layer: fades away while the spatial window is open.
+        LoadHalo(uiState, Modifier.fillMaxSize().graphicsLayer { alpha = 0.35f + 0.65f * telemetryAlpha })
+        GlanceStrip(uiState, Modifier.align(Alignment.CenterStart).padding(start = 14.dp).graphicsLayer { alpha = telemetryAlpha })
 
         SpatialDashboard(
           uiState = uiState,
@@ -206,12 +175,12 @@ fun SpatialHudScreen(
         )
 
         Column(
-          modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp),
-          horizontalAlignment = Alignment.CenterHorizontally,
+          modifier = Modifier.align(Alignment.BottomEnd).padding(end = 14.dp, bottom = 12.dp),
+          horizontalAlignment = Alignment.End,
           verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
           GestureChip(uiState)
-          MicMeter(uiState)
+          if (uiState.mic.speaking || uiState.mic.calibrating) MicMeter(uiState)
         }
       }
     } else {
@@ -223,8 +192,10 @@ fun SpatialHudScreen(
       horizontalAlignment = Alignment.CenterHorizontally,
     ) {
       GameGradientCompass(headingDegrees = uiState.headingDegrees, batteryPercent = uiState.batteryPercent)
-      AlertBanner(uiState)
     }
+
+    // Everything except the compass lives on the periphery: the centre and the ground stay clear.
+    Box(Modifier.align(Alignment.TopEnd).displayCutoutPadding().padding(top = 70.dp, end = 16.dp)) { AlertBanner(uiState) }
 
     // Invisible 5-tap exit zone (upper-right corner).
     Box(
@@ -412,72 +383,91 @@ private fun SpatialDashboard(
     val wPx = constraints.maxWidth.toFloat()
     val hPx = constraints.maxHeight.toFloat()
     val pxPerDeg = wPx / SpatialLayout.VIEW_HFOV_DEG
-    // Keep tiles clear of the compass + alert capsule above and the control chips below.
+    // A single compact window, set back in space; neighbours are small peek cards.
     val topReserve = 92.dp
-    val bottomReserve = 30.dp
-    val usableH = (maxHeight - topReserve - bottomReserve).coerceAtLeast(160.dp)
+    val bottomReserve = 44.dp
+    val usableH = (maxHeight - topReserve - bottomReserve).coerceAtLeast(150.dp)
     val centerYPx = with(density) { (topReserve + usableH / 2).toPx() }
-    fun tileSize(page: DashboardPage) =
-      if (page == DashboardPage.ISOLATION || page == DashboardPage.ENVIRONMENT) minOf(maxWidth * 0.66f, 500.dp) to minOf(usableH, 280.dp)
-      else minOf(maxWidth * 0.58f, 430.dp) to minOf(usableH, 270.dp)
+    val winW = minOf(maxWidth * 0.58f, 460.dp)
+    val winH = minOf(usableH, 214.dp)
+    val winWPx = with(density) { winW.toPx() }
+    val winHPx = with(density) { winH.toPx() }
+    val peekW = 150.dp
+    val peekWPx = with(density) { peekW.toPx() }
+    val peekHPx = with(density) { 40.dp.toPx() }
 
     val pages = DashboardPage.ring + DashboardPage.DRILLS
-    // Draw farthest first so the focused tile sits on top.
-    val ordered =
-      pages
-        .map { page ->
-          val yaw = SpatialLayout.tileYaw(page, anchorYaw, uiState.headingDegrees)
-          val pitch = SpatialLayout.tilePitch(page, anchorPitch)
-          page to SpatialLayout.project(yaw, pitch, uiState.headingDegrees, uiState.pitchDegrees)
-        }
-        .sortedByDescending { (_, p) -> kotlin.math.abs(p.xDeg) + kotlin.math.abs(p.yDeg) }
-
-    for ((page, proj) in ordered) {
-      if (!proj.visible) continue
-      val focused = page == uiState.currentPage
-      val (tileW, tileH) = tileSize(page)
-      val tileWPx = with(density) { tileW.toPx() }
-      val tileHPx = with(density) { tileH.toPx() }
-      val accent =
-        when {
-          page == DashboardPage.ISOLATION && uiState.cognitive.level != CognitiveLevel.NOMINAL -> levelColor(uiState.cognitive.level)
-          page == DashboardPage.RADIATION && uiState.radiation.status == RadiationStatus.STORM -> Ios.Red
-          focused -> Color.White.copy(alpha = 0.32f)
-          else -> null
-        }
-      GlassPanel(
-        accent = accent,
-        modifier =
-          Modifier.offset {
-              IntOffset(
-                (wPx / 2f + proj.xDeg * pxPerDeg - tileWPx / 2f).roundToInt(),
-                (centerYPx - proj.yDeg * pxPerDeg - tileHPx / 2f).roundToInt(),
-              )
-            }
-            .size(tileW, tileH)
-            .testTag("spatial_tile_${page.name.lowercase()}")
-            .graphicsLayer {
-              val s = proj.scale * (0.86f + 0.14f * reveal)
-              scaleX = s
-              scaleY = s
-              rotationY = proj.rotationY
-              rotationX = proj.rotationX
-              alpha = proj.alpha * reveal * (if (focused) 1f else 0.82f)
-              cameraDistance = 16f * density.density
-            },
-      ) {
-        when (page) {
-          DashboardPage.RADIATION -> RadiationTile(uiState)
-          DashboardPage.ISOLATION -> IsolationTile(uiState, eyePreview, eyeOverlay)
-          DashboardPage.DISTANCE -> DistanceTile(uiState)
-          DashboardPage.GRAVITY -> GravityTile(uiState)
-          DashboardPage.ENVIRONMENT -> EnvironmentTile(uiState, onRequestLocationPermission)
-          DashboardPage.DRILLS -> DrillsTile(uiState.activeDrill)
-        }
+    val projections =
+      pages.map { page ->
+        val yaw = SpatialLayout.tileYaw(page, anchorYaw, uiState.headingDegrees)
+        val pitch = SpatialLayout.tilePitch(page, anchorPitch)
+        page to SpatialLayout.project(yaw, pitch, uiState.headingDegrees, uiState.pitchDegrees)
       }
+
+    for ((page, proj) in projections) {
+      if (!proj.visible || page == uiState.currentPage) continue
+      PeekCard(
+        page,
+        uiState,
+        Modifier.offset {
+            IntOffset(
+              (wPx / 2f + proj.xDeg * pxPerDeg - peekWPx / 2f).roundToInt(),
+              (centerYPx - proj.yDeg * pxPerDeg - peekHPx / 2f).roundToInt(),
+            )
+          }
+          .width(peekW)
+          .testTag("spatial_peek_${page.name.lowercase()}")
+          .graphicsLayer {
+            alpha = 0.55f * proj.alpha * reveal
+            rotationY = proj.rotationY
+            cameraDistance = 16f * density.density
+          },
+      )
     }
 
-    RingIndicator(uiState.currentPage, Modifier.align(Alignment.BottomCenter).padding(bottom = 36.dp).testTag("dashboard_page_indicator"))
+    val focus = projections.firstOrNull { it.first == uiState.currentPage }
+    if (focus != null && focus.second.visible) {
+      val proj = focus.second
+      val winX = wPx / 2f + proj.xDeg * pxPerDeg - winWPx / 2f
+      val winY = centerYPx - proj.yDeg * pxPerDeg - winHPx / 2f
+      val layer: androidx.compose.ui.graphics.GraphicsLayerScope.() -> Unit = {
+        val sc = proj.scale * (0.9f + 0.1f * reveal)
+        scaleX = sc
+        scaleY = sc
+        rotationY = proj.rotationY
+        rotationX = proj.rotationX
+        alpha = proj.alpha * reveal
+        cameraDistance = 16f * density.density
+      }
+      VisionWindow(
+        uiState.currentPage,
+        uiState,
+        eyePreview,
+        eyeOverlay,
+        onRequestLocationPermission,
+        Modifier.offset { IntOffset(winX.roundToInt(), winY.roundToInt()) }
+          .size(winW, winH)
+          .testTag("spatial_tile_${uiState.currentPage.name.lowercase()}")
+          .graphicsLayer(layer),
+      )
+      val tabYPx = winY + winHPx + with(density) { 8.dp.toPx() }
+      TabOrnament(
+        uiState.currentPage,
+        Modifier.offset { IntOffset((winX + winWPx / 2f).roundToInt(), tabYPx.roundToInt()) }
+          .graphicsLayer {
+            translationX = -size.width / 2f
+            alpha = proj.alpha * reveal
+          },
+      )
+      GestureOrnament(
+        uiState,
+        Modifier.offset { IntOffset((winX - with(density) { 46.dp.toPx() }).roundToInt(), (winY + winHPx / 2f).roundToInt()) }
+          .graphicsLayer {
+            translationY = -size.height / 2f
+            alpha = proj.alpha * reveal
+          },
+      )
+    }
 
     if (cue.value > 0.01f && uiState.lastSwipeDirection != null) {
       val left = uiState.lastSwipeDirection == SwipeDirection.PREVIOUS
@@ -497,19 +487,6 @@ private fun SpatialDashboard(
   }
 }
 
-/** MENTAL -> VITALS -> RADIATION -> MAP (loop), with DRILLS shown as the "look down" dot. */
-@Composable
-private fun RingIndicator(current: DashboardPage, modifier: Modifier) {
-  Row(modifier, horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-    DashboardPage.ring.forEach { page ->
-      val selected = page == current
-      val w by animateFloatAsState(if (selected) 20f else 7f, tween(200), label = "ring_dot_${page.name}")
-      Box(Modifier.size(w.dp, 7.dp).clip(CircleShape).background(if (selected) hazardColor(page) else Color.White.copy(alpha = 0.3f)))
-    }
-    Text("↺", style = hudText(9.sp, Ios.Secondary))
-    Box(Modifier.size(7.dp).clip(CircleShape).background(if (current == DashboardPage.DRILLS) Ios.Red else Color.White.copy(alpha = 0.18f)))
-  }
-}
 
 // ------------------------------------------------------------------ Alerts & controls
 
@@ -525,7 +502,7 @@ private fun AlertBanner(uiState: HudUiState) {
       cog.level == CognitiveLevel.WARNING -> "Warning · load ${cog.index} · ${cog.topDriver.lowercase()}" to levelColor(cog.level)
       rad.status == RadiationStatus.STORM -> "Solar particle event · seek shelter" to Ios.Red
       cog.level == CognitiveLevel.CAUTION -> "Caution · load ${cog.index} · ${cog.topDriver.lowercase()}" to Ios.Yellow
-      uiState.activeDrill != EmergencyDrill.NONE -> "Drill ${uiState.activeDrill.code} · ${uiState.activeDrill.title}" to Ios.Orange
+      uiState.activeDrill != EmergencyDrill.NONE -> "Drill ${uiState.activeDrill.code} · ${uiState.activeDrill.title}" to Color.White
       else -> null to IosSfGreen
     }
   if (text == null) return
@@ -585,7 +562,7 @@ private fun GestureChip(uiState: HudUiState) {
     val label =
       when {
         showPending -> "${g.activePose.label} → ${g.pendingAction?.label}"
-        showFlash -> "✓ ${g.lastAction?.label}"
+        showFlash -> "${g.lastAction?.label}"
         else -> g.activePose.label
       }
     Text(label, style = hudText(9.sp, if (showFlash && !showPending) IosSfGreen else IosLabelPrimary))

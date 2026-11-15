@@ -9,7 +9,7 @@ data class MicStatus(
   val noiseFloorDb: Float = -60f,
   val gateDb: Float = -51f,
   val speaking: Boolean = false,
-  val calibrating: Boolean = true,
+  val calibrating: Boolean = false,
   val sensitivity: Int = MicCalibrator.DEFAULT_SENSITIVITY,
   val gain: Float = 1f,
   val engine: String = "OFFLINE",

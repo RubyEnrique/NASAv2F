@@ -50,17 +50,19 @@ import java.util.Locale
 
 /** iOS dark-mode system palette (vibrant variants). */
 internal object Ios {
+  // Colour discipline: everything is black / white / gray, except status.
+  // Green = nominal, Yellow = caution, Red = warning. Nothing else carries colour.
   val Red = Color(0xFFFF453A)
-  val Orange = Color(0xFFFF9F0A)
   val Yellow = Color(0xFFFFD60A)
   val Green = Color(0xFF30D158)
-  val Mint = Color(0xFF66D4CF)
-  val Teal = Color(0xFF40C8E0)
-  val Cyan = Color(0xFF64D2FF)
-  val Blue = Color(0xFF0A84FF)
-  val Indigo = Color(0xFF5E5CE6)
-  val Purple = Color(0xFFBF5AF2)
-  val Pink = Color(0xFFFF375F)
+  val Orange = Yellow // elevated == caution
+  val Mint = Color.White
+  val Teal = Color.White
+  val Cyan = Color.White
+  val Blue = Color.White
+  val Indigo = Color.White
+  val Purple = Color.White
+  val Pink = Color.White
   val Label = Color(0xFFFFFFFF)
   val Secondary = Color(0x99EBEBF5)
   val Tertiary = Color(0x4DEBEBF5)
@@ -70,21 +72,14 @@ internal object Ios {
   val Fill = Color(0x3D787880)
 }
 
-internal fun hazardColor(page: DashboardPage): Color =
-  when (page) {
-    DashboardPage.RADIATION -> Ios.Orange
-    DashboardPage.ISOLATION -> Ios.Indigo
-    DashboardPage.DISTANCE -> Ios.Teal
-    DashboardPage.GRAVITY -> Ios.Green
-    DashboardPage.ENVIRONMENT -> Ios.Blue
-    DashboardPage.DRILLS -> Ios.Red
-  }
+@Suppress("UNUSED_PARAMETER")
+internal fun hazardColor(page: DashboardPage): Color = Color.White
 
 internal fun levelColor(level: CognitiveLevel): Color =
   when (level) {
     CognitiveLevel.NOMINAL -> Ios.Green
     CognitiveLevel.CAUTION -> Ios.Yellow
-    CognitiveLevel.WARNING -> Ios.Orange
+    CognitiveLevel.WARNING -> Ios.Red
     CognitiveLevel.EMERGENCY -> Ios.Red
   }
 
@@ -166,10 +161,10 @@ internal fun StatusPill(text: String, color: Color, tag: String, modifier: Modif
 @Composable
 internal fun HazardBadge(page: DashboardPage, size: Dp = 22.dp) {
   Box(
-    Modifier.size(size).clip(RoundedCornerShape(size * 0.28f)).background(hazardColor(page)),
+    Modifier.size(size).clip(RoundedCornerShape(size * 0.28f)).background(Color.White.copy(alpha = 0.92f)),
     contentAlignment = Alignment.Center,
   ) {
-    Text(if (page.hazard == 0) "!" else "${page.hazard}", style = hudText((size.value * 0.55f).sp, Color.White, FontWeight.Bold))
+    Text(if (page.hazard == 0) "D" else "${page.hazard}", style = hudText((size.value * 0.55f).sp, Color.Black, FontWeight.Bold))
   }
 }
 
@@ -273,8 +268,7 @@ internal fun LoadGauge(value: Int, color: Color, modifier: Modifier = Modifier, 
     val sweep = 270f
     drawArc(Ios.Fill, start, sweep, false, tl, arc, style = Stroke(sw, cap = StrokeCap.Round))
     drawArc(
-      // Sweep angles start at 3 o'clock; the arc runs 135 deg -> 405 deg (green -> red).
-      Brush.sweepGradient(0f to Ios.Orange, 0.125f to Ios.Red, 0.375f to Ios.Green, 0.75f to Ios.Yellow, 1f to Ios.Orange),
+      color,
       start,
       sweep * (value.coerceIn(0, 100) / 100f),
       false,
@@ -298,7 +292,7 @@ internal fun TrendChart(
   forecast: Int?,
   color: Color,
   modifier: Modifier = Modifier,
-  thresholds: List<Pair<Int, Color>> = listOf(70 to Ios.Yellow, 90 to Ios.Orange, 95 to Ios.Red),
+  thresholds: List<Pair<Int, Color>> = listOf(70 to Ios.Yellow, 90 to Ios.Red, 95 to Ios.Red),
 ) {
   Canvas(modifier) {
     val h = size.height
@@ -326,6 +320,62 @@ internal fun TrendChart(
     }
     drawCircle(color, 3.dp.toPx(), last)
   }
+}
+
+
+/** visionOS-style light glass tokens. */
+internal object Vision {
+  val Window = Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.22f), Color.White.copy(alpha = 0.13f)))
+  val WindowEdge = Brush.linearGradient(listOf(Color.White.copy(alpha = 0.55f), Color.White.copy(alpha = 0.12f), Color.White.copy(alpha = 0.30f)))
+  val Card = Color.White.copy(alpha = 0.13f)
+  val CardStrong = Color.White.copy(alpha = 0.22f)
+  val Well = Color.Black.copy(alpha = 0.16f)
+  val Text2 = Color.White.copy(alpha = 0.68f)
+  val Text3 = Color.White.copy(alpha = 0.45f)
+}
+
+/** Frosted bento card: small caption on top, big value, optional unit and footnote. */
+@Composable
+internal fun BentoCard(
+  title: String,
+  modifier: Modifier = Modifier,
+  tint: Color? = null,
+  content: @Composable ColumnScope.() -> Unit,
+) {
+  val shape = RoundedCornerShape(18.dp)
+  Column(
+    modifier
+      .clip(shape)
+      .background(Vision.Card)
+      .then(if (tint != null) Modifier.background(Brush.linearGradient(listOf(tint.copy(alpha = 0.26f), tint.copy(alpha = 0.06f)))) else Modifier)
+      .border(0.5.dp, Color.White.copy(alpha = 0.16f), shape)
+      .padding(horizontal = 11.dp, vertical = 8.dp),
+    verticalArrangement = Arrangement.spacedBy(2.dp),
+  ) {
+    Text(title, style = hudText(8.5.sp, Vision.Text2, FontWeight.Medium), maxLines = 1)
+    content()
+  }
+}
+
+@Composable
+internal fun BigValue(value: String, unit: String? = null, color: Color = Ios.Label, size: TextUnit = 20.sp, tag: String? = null) {
+  Row(verticalAlignment = Alignment.Bottom) {
+    Text(
+      value,
+      style = hudText(size, color, FontWeight.SemiBold, (-0.3).sp),
+      maxLines = 1,
+      modifier = if (tag != null) Modifier.testTag(tag) else Modifier,
+    )
+    if (unit != null) {
+      Spacer(Modifier.width(3.dp))
+      Text(unit, style = hudText(8.5.sp, Vision.Text2, FontWeight.Medium), modifier = Modifier.padding(bottom = 3.dp), maxLines = 1)
+    }
+  }
+}
+
+@Composable
+internal fun SmallNote(text: String, color: Color = Vision.Text3, maxLines: Int = 1, tag: String? = null) {
+  Text(text, style = hudText(7.5.sp, color, FontWeight.Normal), maxLines = maxLines, overflow = TextOverflow.Ellipsis, modifier = if (tag != null) Modifier.testTag(tag) else Modifier)
 }
 
 private const val BARREL_SHADER =

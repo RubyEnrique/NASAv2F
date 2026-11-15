@@ -18,8 +18,6 @@ import com.example.hud.HudUiState
 import com.example.hud.HudViewModel
 import com.example.hud.SpatialHudScreen
 import com.example.hud.SpatialLayout
-import com.example.hud.SuitTelemetryWidget
-import com.example.hud.VitalsTelemetryWidget
 import com.example.mental.EmergencyDrill
 import com.example.ui.theme.SpatialHudTheme
 import com.example.voice.VoiceCommand
@@ -88,20 +86,16 @@ class ExampleRobolectricTest {
   }
 
   @Test
-  fun cornerVisorCards_showVitalsLoadAndSuitConsumables() {
-    composeTestRule.setContent {
-      SpatialHudTheme {
-        androidx.compose.foundation.layout.Column {
-          VitalsTelemetryWidget(cognitiveLoad = 42)
-          SuitTelemetryWidget()
-        }
-      }
-    }
+  fun ambientHud_showsGlanceStripAndLoadHaloOnly() {
+    val vm = HudViewModel(enablePeriodicDecay = false)
+    show(vm.uiState.value.copy(hasCameraPermission = true))
+    composeTestRule.onNodeWithTag("glance_strip").assertIsDisplayed()
     composeTestRule.onNodeWithTag("vitals_bpm_text").assertTextEquals("86")
-    composeTestRule.onNodeWithTag("vitals_load_text").assertTextEquals("42")
-    composeTestRule.onNodeWithTag("suit_widget_pwr_text").assertTextEquals("92%")
-    composeTestRule.onNodeWithTag("suit_rad_text").assertTextEquals("28µSv/h")
-    composeTestRule.onNodeWithTag("suit_widget_eva_text").assertTextEquals("03:42")
+    composeTestRule.onNodeWithTag("glance_rad_text").assertTextEquals("11") // shielded at base: 0.4 x 28
+    composeTestRule.onNodeWithTag("glance_load_text").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("load_halo").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("mic_meter").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("spatial_tile_isolation").assertDoesNotExist()
   }
 
   @Test
@@ -138,8 +132,8 @@ class ExampleRobolectricTest {
     show(openOn(DashboardPage.ENVIRONMENT, vm.uiState.value.copy(distanceMeters = 1240f, speedMps = 2.1f)))
     composeTestRule.onNodeWithTag("dashboard_page_environment").assertIsDisplayed()
     composeTestRule.onNodeWithTag("environment_status_pill").assertTextEquals("Check suit")
-    composeTestRule.onNodeWithTag("suit_helmet_co2_text").assertTextEquals("8.4 mmHg")
-    composeTestRule.onNodeWithTag("suit_pressure_text").assertTextEquals("4.30 psi")
+    composeTestRule.onNodeWithTag("suit_helmet_co2_text").assertTextEquals("8.4")
+    composeTestRule.onNodeWithTag("suit_pressure_text").assertTextEquals("4.30")
     composeTestRule.onNodeWithTag("outside_air_text").assertTextContains("Pa", substring = true)
     composeTestRule.onNodeWithTag("mars_mola_map_canvas").assertIsDisplayed()
     composeTestRule.onNodeWithTag("dashboard_distance_text").assertTextEquals("1.24")
@@ -165,6 +159,8 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("dashboard_page_gravity").assertIsDisplayed()
     composeTestRule.onNodeWithTag("gravity_rings").assertIsDisplayed()
     composeTestRule.onNodeWithTag("gravity_load_text").assertTextEquals("380 / 7,500")
+    composeTestRule.onNodeWithTag("spatial_peek_isolation").assertExists()
+    composeTestRule.onNodeWithTag("gesture_ornament").assertIsDisplayed()
   }
 
   @Test
@@ -214,7 +210,6 @@ class ExampleRobolectricTest {
       )
     )
     composeTestRule.onNodeWithTag("gesture_chip").assertIsDisplayed()
-    composeTestRule.onNodeWithTag("mic_meter").assertIsDisplayed()
   }
 
   @Test

@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -45,10 +44,8 @@ import androidx.compose.ui.unit.sp
 import com.example.camera.EyeOverlay
 import com.example.eye.EyeTrackingStatus
 import com.example.gesture.DashboardPage
-import com.example.mental.CognitiveLevel
 import com.example.mental.EmergencyDrill
 import com.example.mental.StressLevel
-import com.example.nasa.Mars24
 import com.example.nasa.SpaceWeatherLevel
 import com.example.radiation.RadiationModel
 import com.example.radiation.RadiationStatus
@@ -56,87 +53,132 @@ import com.example.radiation.ShelterStatus
 import com.example.suit.AxemuProfile
 import kotlin.math.roundToInt
 
-private val TilePadding = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+/*
+ * Bento-grid page bodies for the visionOS-style window. Each hazard shows at most ~6 small cards;
+ * the window frame (VisionWindow) supplies the header, the persistent mind sidebar and ornaments.
+ *
+ * Thresholds referenced from NASA: helmet CO2 amber at 3 mmHg (NASA-STD-3001 Vol 2 Rev D 1 h
+ * average limit for habitable volumes), red at 6 mmHg; suit pressure nominal 4.3 psi (EMU/xEMU).
+ */
 
-/** NASA ISS reference sleep (Barger et al. 2014, Lancet Neurology): ~6.1 h/night vs 8.5 h scheduled. */
-private const val NASA_ISS_SLEEP_H = 6.1f
-private const val MARS_SOL_DRIFT_MIN = 39.6f
+private val Gap = 7.dp
 
-// ===================================================================== H1 · RADIATION (mind)
+/** Header status for each page (also used by the small "peek" cards of neighbouring hazards). */
+internal fun pageStatus(page: DashboardPage, s: HudUiState): Pair<String, Color> =
+  when (page) {
+    DashboardPage.RADIATION -> {
+      val sw = s.spaceWeather.level
+      when {
+        s.radiation.status == RadiationStatus.STORM -> s.radiation.status.label to Ios.Red
+        sw == SpaceWeatherLevel.SEP -> "SEP alert" to Ios.Red
+        s.radiation.status == RadiationStatus.ELEVATED || sw == SpaceWeatherLevel.ACTIVE -> "Elevated" to Ios.Orange
+        else -> "Nominal" to Ios.Green
+      }
+    }
+    DashboardPage.ISOLATION -> s.cognitive.level.label.lowercase().replaceFirstChar { it.uppercase() } to levelColor(s.cognitive.level)
+    DashboardPage.DISTANCE ->
+      when {
+        s.earthLink.solarConjunction -> "Comms blackout" to Ios.Red
+        s.consumables.turnBackInMinutes <= 0 -> "Turn back" to Ios.Red
+        else -> "Act locally" to Color.White
+      }
+    DashboardPage.GRAVITY ->
+      s.body.atrophyRisk to
+        when (s.body.atrophyRisk) {
+          "On track" -> Ios.Green
+          "Moderate" -> Ios.Yellow
+          else -> Ios.Orange
+        }
+    DashboardPage.ENVIRONMENT -> {
+      val suit = s.suit
+      when {
+        !suit.isPressureNominal || suit.helmetCo2MmHg >= 6f || suit.isOxygenLow -> "Check suit" to Ios.Red
+        s.hasGpsFix -> "Live" to Ios.Green
+        else -> "Acquiring" to Ios.Yellow
+      }
+    }
+    DashboardPage.DRILLS ->
+      if (s.activeDrill == EmergencyDrill.NONE) "Standby" to Vision.Text2
+      else "${s.activeDrill.code} ACTIVE" to (if (s.activeDrill.isCritical) Ios.Red else Ios.Yellow)
+  }
+
+internal fun pageStatusTag(page: DashboardPage): String =
+  if (page == DashboardPage.ISOLATION) "cognitive_level_pill" else "${page.name.lowercase()}_status_pill"
+
+/** One-line headline for a page, shown on its peek card. */
+internal fun pageHeadline(page: DashboardPage, s: HudUiState): String =
+  when (page) {
+    DashboardPage.RADIATION -> fmt("%.0f µSv/h", s.radiation.doseRateUsvPerHour)
+    DashboardPage.ISOLATION -> "Load ${s.cognitive.index}"
+    DashboardPage.DISTANCE -> fmt("%.0f min to Earth", s.earthLink.oneWayDelaySec / 60.0)
+    DashboardPage.GRAVITY -> "${s.body.earthEquivalentLoadSteps} load steps"
+    DashboardPage.ENVIRONMENT -> fmt("%.0f °C outside", s.habitability.outside.airTempC)
+    DashboardPage.DRILLS -> if (s.activeDrill == EmergencyDrill.NONE) "Standby" else s.activeDrill.title
+  }
 
 @Composable
-internal fun RadiationTile(uiState: HudUiState) {
-  val r = uiState.radiation
-  val sw = uiState.spaceWeather
-  val color =
-    when {
-      r.status == RadiationStatus.STORM || sw.level == SpaceWeatherLevel.SEP -> Ios.Red
-      r.status == RadiationStatus.ELEVATED || sw.level == SpaceWeatherLevel.ACTIVE -> Ios.Orange
-      else -> Ios.Green
-    }
-  Column(TilePadding.fillMaxSize().testTag("dashboard_page_radiation"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-    TileHeader(DashboardPage.RADIATION, r.status.label, color, "radiation_status_pill")
-    Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-      Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text("Dose rate", style = IosType.caption)
-        Row(verticalAlignment = Alignment.Bottom) {
-          Text(fmt("%.1f", r.doseRateUsvPerHour), style = IosType.largeNumber.copy(color = color), modifier = Modifier.testTag("radiation_dose_rate_text"))
-          Spacer(Modifier.width(4.dp))
-          Text("µSv/h", style = IosType.footnote, modifier = Modifier.padding(bottom = 5.dp))
-        }
+internal fun PageBody(page: DashboardPage, s: HudUiState, eyePreview: ImageBitmap?, eyeOverlay: EyeOverlay?, onRequestLocationPermission: () -> Unit) {
+  when (page) {
+    DashboardPage.RADIATION -> RadiationBody(s)
+    DashboardPage.ISOLATION -> IsolationBody(s, eyePreview, eyeOverlay)
+    DashboardPage.DISTANCE -> DistanceBody(s)
+    DashboardPage.GRAVITY -> GravityBody(s)
+    DashboardPage.ENVIRONMENT -> EnvironmentBody(s, onRequestLocationPermission)
+    DashboardPage.DRILLS -> DrillsBody(s.activeDrill)
+  }
+}
+
+// ===================================================================== H1 · Radiation (mind)
+
+@Composable
+private fun RadiationBody(s: HudUiState) {
+  val r = s.radiation
+  val (_, color) = pageStatus(DashboardPage.RADIATION, s)
+  Row(Modifier.fillMaxSize().testTag("dashboard_page_radiation"), horizontalArrangement = Arrangement.spacedBy(Gap)) {
+    Column(Modifier.weight(1.25f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(Gap)) {
+      BentoCard("Dose rate", Modifier.fillMaxWidth().weight(1f), tint = if (color == Ios.Green) null else color) {
+        BigValue(fmt("%.1f", r.doseRateUsvPerHour), "µSv/h", color, 24.sp, "radiation_dose_rate_text")
         val ratio = r.doseRateUsvPerHour / RadiationModel.GCR_BASELINE_USV_PER_H
-        LevelBar((0.25f + 0.25f * kotlin.math.log2(ratio.coerceAtLeast(0.25f))).coerceIn(0.03f, 1f), color)
-        Text(fmt("Mars surface baseline %.0f µSv/h (Curiosity RAD)", RadiationModel.GCR_BASELINE_USV_PER_H), style = IosType.footnote)
-        GroupedList {
-          ListRow(
-            "Space weather",
-            when (sw.level) {
-              SpaceWeatherLevel.UNKNOWN -> "Offline"
-              else -> sw.level.label + (sw.strongestFlare?.let { " · $it" } ?: "")
-            },
-            if (sw.level == SpaceWeatherLevel.SEP) Ios.Red else Ios.Label,
-            dot = Ios.Yellow,
-            valueTag = "space_weather_text",
+        LevelBar((0.25f + 0.25f * kotlin.math.log2(ratio.coerceAtLeast(0.25f))).coerceIn(0.03f, 1f), color, height = 3.dp)
+        SmallNote(fmt("Mars baseline %.0f µSv/h · Curiosity RAD", RadiationModel.GCR_BASELINE_USV_PER_H))
+      }
+      Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Gap)) {
+        val sw = s.spaceWeather
+        BentoCard("Sun · NASA DONKI", Modifier.weight(1f)) {
+          BigValue(if (sw.level == SpaceWeatherLevel.UNKNOWN) "Offline" else sw.level.label, size = 13.sp, tag = "space_weather_text")
+          SmallNote(sw.sepRiskPercent?.let { "SEP risk 48 h · $it%" } ?: "Syncs when online")
+        }
+        BentoCard("Hand steadiness", Modifier.weight(1f)) {
+          BigValue(
+            s.motorSteadiness?.let { "$it" } ?: "Raise a hand",
+            if (s.motorSteadiness != null) "/100" else null,
+            if ((s.motorSteadiness ?: 100) < 60) Ios.Orange else Ios.Label,
+            13.sp,
+            "motor_steadiness_text",
           )
-          ListRow("SEP risk 48 h", sw.sepRiskPercent?.let { "$it%" } ?: "—", dot = Ios.Orange)
-          ListRow("EVA dose", fmt("%.1f µSv", r.evaDoseUsv), dot = Ios.Blue)
-          ListRow("Career limit used", fmt("%.4f%%", r.careerLimitFraction * 100f), dot = Ios.Purple, separator = false)
+          SmallNote("Motor watch for CNS effects")
         }
       }
-      Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text("Brain & motor watch", style = IosType.caption)
-        GroupedList {
-          ListRow(
-            "Hand steadiness",
-            uiState.motorSteadiness?.let { "$it / 100" } ?: "Raise a hand",
-            when (val m = uiState.motorSteadiness) {
-              null -> Ios.Secondary
-              in 0..59 -> Ios.Orange
-              else -> Ios.Green
-            },
-            dot = Ios.Mint,
-            valueTag = "motor_steadiness_text",
-          )
-          ListRow("Cognitive load", "${uiState.cognitive.index}", levelColor(uiState.cognitive.level), dot = Ios.Indigo, separator = false)
-        }
+    }
+    Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(Gap)) {
+      BentoCard("Shelter route", Modifier.fillMaxWidth().weight(1f)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-          BaseBearingArrow(
-            SpatialLayout.angleDelta(r.bearingToBaseDeg, uiState.headingDegrees),
-            r.shelter == ShelterStatus.EXPOSED,
-            color,
-            Modifier.size(40.dp),
-          )
+          BaseBearingArrow(SpatialLayout.angleDelta(r.bearingToBaseDeg, s.headingDegrees), r.shelter == ShelterStatus.EXPOSED, color, Modifier.size(34.dp))
           Spacer(Modifier.width(8.dp))
           Column {
             Text(
-              if (r.shelter == ShelterStatus.SHELTERED) "At base · shielded" else fmt("%.0f m · %03.0f°", r.distanceToBaseMeters, r.bearingToBaseDeg),
-              style = IosType.headline,
+              if (r.shelter == ShelterStatus.SHELTERED) "At base" else fmt("%.0f m · %03.0f°", r.distanceToBaseMeters, r.bearingToBaseDeg),
+              style = hudText(13.sp),
               modifier = Modifier.testTag("radiation_base_text"),
             )
-            Text(fmt("ETA %s · +%.1f µSv", formatDuration(r.etaToBaseSec), r.returnDoseUsv), style = IosType.footnote)
+            SmallNote(fmt("ETA %s · +%.1f µSv", formatDuration(r.etaToBaseSec), r.returnDoseUsv))
           }
         }
-        Text(r.advice, style = hudText(9.sp, color, FontWeight.Medium), maxLines = 2)
+        SmallNote(r.advice, color, maxLines = 2)
+      }
+      Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Gap)) {
+        BentoCard("EVA dose", Modifier.weight(1f)) { BigValue(fmt("%.1f", r.evaDoseUsv), "µSv", size = 14.sp) }
+        BentoCard("Career used", Modifier.weight(1f)) { BigValue(fmt("%.3f", r.careerLimitFraction * 100f), "%", size = 14.sp) }
       }
     }
   }
@@ -145,8 +187,8 @@ internal fun RadiationTile(uiState: HudUiState) {
 @Composable
 private fun BaseBearingArrow(relativeDeg: Float, active: Boolean, color: Color, modifier: Modifier) {
   val animated by animateFloatAsState(relativeDeg, tween(250, easing = FastOutSlowInEasing), label = "base_arrow")
-  Box(modifier.testTag("base_bearing_arrow").clip(RoundedCornerShape(50)).background(Ios.Grouped), contentAlignment = Alignment.Center) {
-    Canvas(Modifier.fillMaxSize().padding(8.dp).rotate(if (active) animated else 0f)) {
+  Box(modifier.testTag("base_bearing_arrow").clip(RoundedCornerShape(50)).background(Vision.Well), contentAlignment = Alignment.Center) {
+    Canvas(Modifier.fillMaxSize().padding(7.dp).rotate(if (active) animated else 0f)) {
       val c = Offset(size.width / 2f, size.height / 2f)
       val l = size.minDimension * 0.5f
       if (!active) {
@@ -167,82 +209,60 @@ private fun BaseBearingArrow(relativeDeg: Float, active: Boolean, color: Color, 
   }
 }
 
-// ===================================================================== H2 · ISOLATION & CONFINEMENT (mind) — cognitive hub
+// ===================================================================== H2 · Isolation (cognitive)
 
 @Composable
-internal fun IsolationTile(uiState: HudUiState, eyePreview: ImageBitmap?, eyeOverlay: EyeOverlay?) {
-  val cog = uiState.cognitive
-  val fc = uiState.cognitiveForecast
+private fun IsolationBody(s: HudUiState, eyePreview: ImageBitmap?, eyeOverlay: EyeOverlay?) {
+  val cog = s.cognitive
+  val fc = s.cognitiveForecast
   val color = levelColor(cog.level)
-  Column(TilePadding.fillMaxSize().testTag("dashboard_page_mental"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-    TileHeader(DashboardPage.ISOLATION, cog.level.label.lowercase().replaceFirstChar { it.uppercase() }, color, "cognitive_level_pill")
-    Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-      // Hero gauge
-      Column(Modifier.width(118.dp).fillMaxHeight(), horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(Modifier.size(112.dp), contentAlignment = Alignment.Center) {
-          LoadGauge(cog.index, color, Modifier.fillMaxSize(), forecast = fc.projectedIn10Min)
-          Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("${cog.index}", style = IosType.largeNumber.copy(fontSize = 34.sp), modifier = Modifier.testTag("cognitive_load_text"))
-            Text("Cognitive load", style = IosType.caption)
-          }
-        }
-        Text(cog.topDriver.lowercase().replaceFirstChar { it.uppercase() }, style = hudText(10.sp, color), modifier = Modifier.testTag("cognitive_driver_text"))
-        Spacer(Modifier.height(4.dp))
-        if (cog.level != CognitiveLevel.NOMINAL) BreathingPacer(color)
-        else Text(cog.recommendation, style = IosType.footnote, maxLines = 2)
-      }
-      // Forecast + eyes
-      Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-          Text("Next 10 min", style = IosType.headline, modifier = Modifier.weight(1f))
-          Text(forecastInsight(uiState), style = hudText(9.sp, if ((fc.minutesToCaution ?: 99.0) < 10.0) Ios.Yellow else Ios.Secondary, FontWeight.Medium), modifier = Modifier.testTag("cognitive_forecast_text"))
-        }
-        TrendChart(fc.history.ifEmpty { listOf(cog.index, cog.index) }, fc.projectedIn10Min, color, Modifier.fillMaxWidth().weight(1f).testTag("cognitive_trend_chart"))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-          EyePreviewBox(uiState, eyePreview, eyeOverlay, Modifier.width(78.dp).height(58.dp))
-          Column(Modifier.weight(1f)) {
-            val eye = uiState.eye
-            MetricLine("Blinks", "${eye.totalBlinks}", valueTag = "eye_blink_count_text")
-            MetricLine("Rate", eye.blinkRatePerMin?.let { fmt("%.0f/min (you %.0f)", it, eye.effectiveBaseline) } ?: "Learning…")
-            MetricLine("Eyelids", cog.ocularPattern.lowercase().replaceFirstChar { it.uppercase() }, if (cog.ocularPattern == "NORMAL") Ios.Green else Ios.Yellow)
-          }
-        }
-      }
-      // Sleep, rhythm, body
-      Column(Modifier.width(150.dp).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        val ms = uiState.mentalState
-        val sleep = ms.sleepTracker
-        GroupedList {
-          ListRow(
-            "Stress",
-            if (ms.stressLevel == StressLevel.UNKNOWN) "—" else "${ms.stressPercent}%",
-            if (ms.stressPercent >= 58) Ios.Orange else Ios.Label,
-            dot = Ios.Purple,
-            valueTag = "cognitive_stress_text",
-          )
-          ListRow("Heart rate", if (uiState.isBiometricSensorLost) "—" else "${uiState.heartRateBpm} bpm", Ios.Pink, dot = Ios.Pink)
-          ListRow(
-            "Sleep",
-            fmt("%.1f h · %d%%", sleep.durationHours, sleep.qualityPercent),
-            if (sleep.durationHours <= 5f) Ios.Orange else Ios.Label,
-            dot = Ios.Indigo,
-            valueTag = "cognitive_sleep_text",
-          )
-          val mars = uiState.marsTime
-          ListRow("Mars time", mars?.let { "Sol ${it.marsSolDate.toInt()} · ${Mars24.formatHours(it.localMeanSolarTimeHours)}" } ?: "—", dot = Ios.Orange, valueTag = "mars_time_text")
-          ListRow("Body clock drift", fmt("+%.0f min/sol", MARS_SOL_DRIFT_MIN), dot = Ios.Teal, separator = false)
-        }
+  val ms = s.mentalState
+  Row(Modifier.fillMaxSize().testTag("dashboard_page_mental"), horizontalArrangement = Arrangement.spacedBy(Gap)) {
+    Column(Modifier.weight(1.5f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(Gap)) {
+      BentoCard("Cognitive load · next 10 min", Modifier.fillMaxWidth().weight(1f)) {
         Text(
-          fmt("NASA: ISS crews average %.1f h sleep; ≤5 h impairs sustained attention.", NASA_ISS_SLEEP_H),
-          style = hudText(7.5.sp, Ios.Tertiary, FontWeight.Normal),
-          maxLines = 2,
+          forecastInsight(s),
+          style = hudText(10.sp, if ((fc.minutesToCaution ?: 99.0) < 10.0) Ios.Yellow else Ios.Label),
+          modifier = Modifier.testTag("cognitive_forecast_text"),
+        )
+        TrendChart(
+          fc.history.ifEmpty { listOf(cog.index, cog.index) },
+          fc.projectedIn10Min,
+          color,
+          Modifier.fillMaxWidth().weight(1f).padding(top = 2.dp).testTag("cognitive_trend_chart"),
         )
       }
+      Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Gap)) {
+        BentoCard("Stress", Modifier.weight(1f)) {
+          BigValue(if (ms.stressLevel == StressLevel.UNKNOWN) "—" else "${ms.stressPercent}", "%", if (ms.stressPercent >= 58) Ios.Orange else Ios.Label, 16.sp, "cognitive_stress_text")
+        }
+        BentoCard("Sleep", Modifier.weight(1f)) {
+          BigValue(fmt("%.1f", ms.sleepTracker.durationHours), "h", if (ms.sleepTracker.durationHours <= 5f) Ios.Orange else Ios.Label, 16.sp, "cognitive_sleep_text")
+        }
+        BentoCard("Heart rate", Modifier.weight(1f)) {
+          BigValue(if (s.isBiometricSensorLost) "—" else "${s.heartRateBpm}", null, Ios.Pink, 16.sp)
+        }
+      }
+    }
+    BentoCard("Eyes · front camera", Modifier.weight(1f).fillMaxHeight()) {
+      EyePreviewBox(s, eyePreview, eyeOverlay, Modifier.fillMaxWidth().weight(1f).padding(vertical = 2.dp))
+      val eye = s.eye
+      Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Column {
+          SmallNote("Blinks")
+          Text("${eye.totalBlinks}", style = hudText(13.sp), modifier = Modifier.testTag("eye_blink_count_text"))
+        }
+        Column(horizontalAlignment = Alignment.End) {
+          SmallNote(eye.blinkRatePerMin?.let { fmt("you %.0f/min", eye.effectiveBaseline) } ?: "learning")
+          Text(eye.blinkRatePerMin?.let { fmt("%.0f/min", it) } ?: "—", style = hudText(13.sp))
+        }
+      }
+      SmallNote(cog.ocularPattern.lowercase().replaceFirstChar { it.uppercase() }, if (cog.ocularPattern == "NORMAL") Ios.Green else Ios.Yellow)
     }
   }
 }
 
-private fun forecastInsight(s: HudUiState): String {
+internal fun forecastInsight(s: HudUiState): String {
   val fc = s.cognitiveForecast
   val slope = fc.slopePerMin
   val toCaution = fc.minutesToCaution
@@ -252,15 +272,15 @@ private fun forecastInsight(s: HudUiState): String {
     toCaution != null && toCaution in 0.1..30.0 -> fmt("Caution in ~%.0f min", toCaution)
     slope > 0.3 -> fmt("Rising %.1f/min", slope)
     slope < -0.3 -> fmt("Easing %.1f/min", -slope)
-    else -> "Stable"
+    else -> "Stable · ${fc.projectedIn10Min} expected"
   }
 }
 
 @Composable
-private fun EyePreviewBox(uiState: HudUiState, bitmap: ImageBitmap?, overlay: EyeOverlay?, modifier: Modifier) {
-  Box(modifier.testTag("eye_preview_box").clip(RoundedCornerShape(12.dp)).background(Color.Black.copy(alpha = 0.6f)), contentAlignment = Alignment.Center) {
-    val status = uiState.eyeTrackingStatus
-    if (uiState.eyePreviewEnabled && bitmap != null) {
+private fun EyePreviewBox(s: HudUiState, bitmap: ImageBitmap?, overlay: EyeOverlay?, modifier: Modifier) {
+  Box(modifier.testTag("eye_preview_box").clip(RoundedCornerShape(12.dp)).background(Vision.Well), contentAlignment = Alignment.Center) {
+    val status = s.eyeTrackingStatus
+    if (s.eyePreviewEnabled && bitmap != null) {
       Image(bitmap, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
       if (overlay != null) {
         Canvas(Modifier.fillMaxSize()) {
@@ -269,31 +289,32 @@ private fun EyePreviewBox(uiState: HudUiState, bitmap: ImageBitmap?, overlay: Ey
           val dh = bitmap.height * scale
           val ox = (size.width - dw) / 2f
           val oy = (size.height - dh) / 2f
-          fun pt(p: Pair<Float, Float>) = Offset(ox + p.first * dw, oy + p.second * dh)
-          listOf(overlay.leftIris, overlay.rightIris).forEach { drawCircle(Ios.Cyan, 2.4.dp.toPx(), pt(it), style = Stroke(1.2.dp.toPx())) }
+          listOf(overlay.leftIris, overlay.rightIris).forEach {
+            drawCircle(Ios.Cyan, 2.4.dp.toPx(), Offset(ox + it.first * dw, oy + it.second * dh), style = Stroke(1.2.dp.toPx()))
+          }
         }
       }
     } else {
       val text =
         when {
-          status == EyeTrackingStatus.UNSUPPORTED_DEVICE -> "Eye tracking\nunsupported"
-          status == EyeTrackingStatus.MODEL_ERROR -> "Eye model\nunavailable"
+          status == EyeTrackingStatus.UNSUPPORTED_DEVICE -> "Eye tracking unsupported"
+          status == EyeTrackingStatus.MODEL_ERROR -> "Eye model unavailable"
           status == EyeTrackingStatus.OFF -> "Eyes off"
-          !uiState.eyePreviewEnabled -> "Tracking\npreview hidden"
-          !uiState.eye.faceDetected -> "Finding eyes…"
+          !s.eyePreviewEnabled -> "Tracking · preview hidden"
+          !s.eye.faceDetected -> "Finding eyes…"
           else -> "Tracking…"
         }
-      Text(text, style = hudText(8.sp, Ios.Secondary, FontWeight.Medium), maxLines = 2)
+      SmallNote(text, Vision.Text2, maxLines = 2)
     }
-    if (uiState.eye.calibrationProgress < 1f && status == EyeTrackingStatus.ACTIVE) {
-      LevelBar(uiState.eye.calibrationProgress, Ios.Cyan, Modifier.align(Alignment.BottomCenter).padding(4.dp), height = 3.dp)
+    if (s.eye.calibrationProgress < 1f && status == EyeTrackingStatus.ACTIVE) {
+      LevelBar(s.eye.calibrationProgress, Ios.Cyan, Modifier.align(Alignment.BottomCenter).padding(4.dp), height = 3.dp)
     }
   }
 }
 
 /** Box breathing (4 s in / hold / out / hold) when load reaches caution. */
 @Composable
-private fun BreathingPacer(color: Color) {
+internal fun BreathingPacer(color: Color, modifier: Modifier = Modifier) {
   val t by rememberInfiniteTransition(label = "breath").animateFloat(0f, 4f, infiniteRepeatable(tween(16_000, easing = LinearEasing)), label = "breath_t")
   val phase = t.toInt().coerceIn(0, 3)
   val frac = t - phase
@@ -304,73 +325,56 @@ private fun BreathingPacer(color: Color) {
       2 -> 1f - 0.65f * frac
       else -> 0.35f
     }
-  Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.testTag("breathing_pacer")) {
-    Canvas(Modifier.size(20.dp)) {
-      drawCircle(color.copy(alpha = 0.2f), size.minDimension / 2f)
+  Row(modifier.testTag("breathing_pacer"), verticalAlignment = Alignment.CenterVertically) {
+    Canvas(Modifier.size(14.dp)) {
+      drawCircle(color.copy(alpha = 0.22f), size.minDimension / 2f)
       drawCircle(color, size.minDimension / 2f * r)
     }
-    Spacer(Modifier.width(6.dp))
-    Text(listOf("Breathe in", "Hold", "Breathe out", "Hold")[phase], style = hudText(10.sp, color))
+    Spacer(Modifier.width(5.dp))
+    Text(listOf("Breathe in", "Hold", "Breathe out", "Hold")[phase], style = hudText(8.5.sp, color))
   }
 }
 
-// ===================================================================== H3 · DISTANCE FROM EARTH (mind)
+// ===================================================================== H3 · Distance (mind)
 
 @Composable
-internal fun DistanceTile(uiState: HudUiState) {
-  val link = uiState.earthLink
-  val c = uiState.consumables
-  val turnBackColor =
+private fun DistanceBody(s: HudUiState) {
+  val c = s.consumables
+  val link = s.earthLink
+  val turnColor =
     when {
       c.turnBackInMinutes <= 0 -> Ios.Red
       c.turnBackInMinutes <= 30 -> Ios.Orange
       else -> Ios.Green
     }
-  val drill = uiState.activeDrill
-  Column(TilePadding.fillMaxSize().testTag("dashboard_page_distance"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-    TileHeader(
-      DashboardPage.DISTANCE,
-      if (link.solarConjunction) "Comms blackout" else "Act locally",
-      if (link.solarConjunction) Ios.Red else Ios.Teal,
-      "distance_status_pill",
-    )
-    Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-      Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text("Signal to Earth", style = IosType.caption)
-        Row(verticalAlignment = Alignment.Bottom) {
-          Text(fmt("%.1f", link.oneWayDelaySec / 60.0), style = IosType.largeNumber.copy(color = Ios.Teal), modifier = Modifier.testTag("earth_delay_text"))
-          Spacer(Modifier.width(4.dp))
-          Text("min one way", style = IosType.footnote, modifier = Modifier.padding(bottom = 5.dp))
-        }
-        Text(fmt("Round trip %.0f min · %.2f AU", link.oneWayDelaySec / 30.0, link.distanceAu), style = IosType.footnote, maxLines = 1)
-        Text("Turn back in", style = IosType.caption, modifier = Modifier.padding(top = 4.dp))
-        Text(
-          if (c.turnBackInMinutes <= 0) "Now" else formatMinutes(c.turnBackInMinutes),
-          style = IosType.largeNumber.copy(fontSize = 22.sp, color = turnBackColor),
-          modifier = Modifier.testTag("turn_back_text"),
-        )
-        Text(
-          "${c.limitingFactor} limits · ${AxemuProfile.RETURN_RESERVE_MIN.toInt()} min reserve",
-          style = IosType.footnote,
-          maxLines = 1,
-        )
+  Row(Modifier.fillMaxSize().testTag("dashboard_page_distance"), horizontalArrangement = Arrangement.spacedBy(Gap)) {
+    Column(Modifier.weight(1.2f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(Gap)) {
+      BentoCard("Turn back in", Modifier.fillMaxWidth().weight(1f), tint = if (turnColor == Ios.Green) null else turnColor) {
+        BigValue(if (c.turnBackInMinutes <= 0) "Now" else formatMinutes(c.turnBackInMinutes), color = turnColor, size = 24.sp, tag = "turn_back_text")
+        SmallNote("${c.limitingFactor} limits · ${AxemuProfile.RETURN_RESERVE_MIN.toInt()} min reserve · ${if (c.usesObservedTrend) "observed trend" else "suit model"}")
       }
-      Column(Modifier.weight(1.1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        GroupedList {
-          ListRow("Oxygen left", formatMinutes(c.oxygenMinutesLeft), if (uiState.suit.isOxygenLow) Ios.Red else Ios.Label, dot = Ios.Cyan)
-          ListRow("Battery left", formatMinutes(c.batteryMinutesLeft), if (uiState.suit.isLowPower) Ios.Red else Ios.Label, dot = Ios.Green)
-          ListRow("AxEMU 8 h rating", formatMinutes(c.ratedEvaMinutesLeft), dot = Ios.Blue)
-          ListRow("Walk back", formatDuration(uiState.radiation.etaToBaseSec), dot = Ios.Orange, separator = false)
+      Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Gap)) {
+        BentoCard("Oxygen", Modifier.weight(1f)) { BigValue(formatDuration((c.oxygenMinutesLeft * 60).toInt()), color = if (s.suit.isOxygenLow) Ios.Red else Ios.Label, size = 12.sp) }
+        BentoCard("Battery", Modifier.weight(1f)) { BigValue(formatDuration((c.batteryMinutesLeft * 60).toInt()), color = if (s.suit.isLowPower) Ios.Red else Ios.Label, size = 12.sp) }
+        BentoCard("Walk back", Modifier.weight(1f)) { BigValue(formatDuration(s.radiation.etaToBaseSec), size = 12.sp) }
+      }
+    }
+    Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(Gap)) {
+      BentoCard("Signal to Earth", Modifier.fillMaxWidth()) {
+        BigValue(fmt("%.1f", link.oneWayDelaySec / 60.0), "min one way", Ios.Teal, 18.sp, "earth_delay_text")
+        SmallNote(fmt("Round trip %.0f min · %.2f AU · JPL", link.oneWayDelaySec / 30.0, link.distanceAu))
+      }
+      val drill = s.activeDrill
+      BentoCard(
+        if (drill == EmergencyDrill.NONE) "Self-sufficiency" else "${drill.code} · ${drill.title}",
+        Modifier.fillMaxWidth().weight(1f),
+        tint = if (drill == EmergencyDrill.NONE) null else Ios.Red,
+      ) {
+        if (drill == EmergencyDrill.NONE) {
+          SmallNote("Earth can't answer in time. Decide here, then report.", Vision.Text2, maxLines = 2)
+        } else {
+          checklistFor(drill).forEachIndexed { i, step -> SmallNote("${i + 1}. $step", Ios.Label) }
         }
-        GroupedList {
-          if (drill == EmergencyDrill.NONE) {
-            ListRow("Emergencies", "None active", Ios.Green, dot = Ios.Red, separator = false)
-          } else {
-            ListRow(drill.code, drill.title, Ios.Red, dot = Ios.Red)
-            checklistFor(drill).take(2).forEachIndexed { i, step -> ListRow("${i + 1}.", step, separator = i < 1) }
-          }
-        }
-        Text("Earth can't answer in time. Decide here, then report.", style = IosType.footnote)
       }
     }
   }
@@ -392,164 +396,163 @@ internal fun checklistFor(drill: EmergencyDrill): List<String> =
     EmergencyDrill.NONE -> emptyList()
   }
 
-// ===================================================================== H4 · GRAVITY (body maintenance)
+// ===================================================================== H4 · Gravity (body)
 
 @Composable
-internal fun GravityTile(uiState: HudUiState) {
-  val b = uiState.body
-  val distFrac = (uiState.distanceMeters / uiState.distanceGoalMeters.coerceAtLeast(100f)).coerceIn(0f, 1f)
-  val riskColor =
-    when (b.atrophyRisk) {
-      "On track" -> Ios.Green
-      "Moderate" -> Ios.Yellow
-      else -> Ios.Orange
-    }
-  Column(TilePadding.fillMaxSize().testTag("dashboard_page_gravity"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-    TileHeader(DashboardPage.GRAVITY, b.atrophyRisk, riskColor, "gravity_status_pill")
-    Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
-      Box(Modifier.size(118.dp).testTag("gravity_rings"), contentAlignment = Alignment.Center) {
-        ActivityRing(b.loadGoalFraction, Ios.Pink, Modifier.fillMaxSize(), 11.dp)
-        ActivityRing(b.exerciseGoalFraction, Ios.Green, Modifier.fillMaxSize().padding(14.dp), 11.dp)
-        ActivityRing(distFrac, Ios.Cyan, Modifier.fillMaxSize().padding(28.dp), 11.dp)
-      }
-      Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        GroupedList {
-          ListRow("Earth-equivalent load", "${b.earthEquivalentLoadSteps} / 7,500", Ios.Pink, dot = Ios.Pink, valueTag = "gravity_load_text")
-          ListRow("Exercise", fmt("%.0f / 150 min", b.exerciseMinutes), Ios.Green, dot = Ios.Green)
-          ListRow("Distance", fmt("%.2f / %.1f km", uiState.distanceMeters / 1000f, uiState.distanceGoalMeters / 1000f), Ios.Cyan, dot = Ios.Cyan)
-          ListRow("Steps on Mars", "${b.steps}", dot = Ios.Orange, separator = false)
+private fun GravityBody(s: HudUiState) {
+  val b = s.body
+  val distFrac = (s.distanceMeters / s.distanceGoalMeters.coerceAtLeast(100f)).coerceIn(0f, 1f)
+  val (_, riskColor) = pageStatus(DashboardPage.GRAVITY, s)
+  Row(Modifier.fillMaxSize().testTag("dashboard_page_gravity"), horizontalArrangement = Arrangement.spacedBy(Gap)) {
+    BentoCard("Activity · 0.38 g", Modifier.weight(1.35f).fillMaxHeight()) {
+      Row(Modifier.fillMaxWidth().weight(1f), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(84.dp).testTag("gravity_rings"), contentAlignment = Alignment.Center) {
+          ActivityRing(b.loadGoalFraction, Color.White, Modifier.fillMaxSize(), 9.dp)
+          ActivityRing(b.exerciseGoalFraction, Color.White.copy(alpha = 0.72f), Modifier.fillMaxSize().padding(11.dp), 9.dp)
+          ActivityRing(distFrac, Color.White.copy(alpha = 0.48f), Modifier.fillMaxSize().padding(22.dp), 9.dp)
         }
-        Text(b.advice, style = hudText(9.5.sp, riskColor, FontWeight.Medium), maxLines = 2)
-        Text(
-          "At 0.38 g each step loads ~38% of Earth body weight. ISS crews exercise ~2.5 h/day and still lose ~1%/month of spine bone density.",
-          style = hudText(7.5.sp, Ios.Tertiary, FontWeight.Normal),
-          maxLines = 2,
-        )
+        Spacer(Modifier.width(10.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+          RingLegend("Load", "${b.earthEquivalentLoadSteps} / 7,500", Ios.Pink, "gravity_load_text")
+          RingLegend("Exercise", fmt("%.0f / 150 min", b.exerciseMinutes), Vision.Text2)
+          RingLegend("Distance", fmt("%.2f / %.1f km", s.distanceMeters / 1000f, s.distanceGoalMeters / 1000f), Vision.Text3)
+        }
+      }
+      SmallNote(b.advice, riskColor, maxLines = 2)
+    }
+    Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(Gap)) {
+      BentoCard("Steps on Mars", Modifier.fillMaxWidth()) { BigValue("${b.steps}", "steps", size = 18.sp) }
+      BentoCard("Bone & muscle", Modifier.fillMaxWidth().weight(1f)) {
+        BigValue(b.atrophyRisk, color = riskColor, size = 14.sp)
+        SmallNote("Each step loads ~38% of Earth weight. ISS crews exercise ~2.5 h/day and still lose ~1%/month spine bone.", maxLines = 3)
       }
     }
   }
 }
 
-// ===================================================================== H5 · HOSTILE / CLOSED ENVIRONMENT (live)
+@Composable
+private fun RingLegend(label: String, value: String, color: Color, tag: String? = null) {
+  Column {
+    Text(label, style = hudText(8.sp, color, FontWeight.Medium))
+    Text(value, style = hudText(11.sp), modifier = if (tag != null) Modifier.testTag(tag) else Modifier)
+  }
+}
+
+// ===================================================================== H5 · Environment (live)
 
 @Composable
-internal fun EnvironmentTile(uiState: HudUiState, onRequestLocationPermission: () -> Unit) {
-  val h = uiState.habitability
-  val s = uiState.suit
-  val alarm = !s.isPressureNominal || s.helmetCo2MmHg >= 6f || s.isOxygenLow
-  Column(TilePadding.fillMaxSize().testTag("dashboard_page_environment"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-    TileHeader(
-      DashboardPage.ENVIRONMENT,
-      if (alarm) "Check suit" else if (uiState.hasGpsFix) "Live" else "Acquiring",
-      if (alarm) Ios.Red else if (uiState.hasGpsFix) Ios.Green else Ios.Yellow,
-      "environment_status_pill",
-    )
-    Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-      Column(Modifier.weight(1.15f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        MarsMolaMapCanvas(
-          trackPoints = uiState.marsTrackPoints,
-          headingDegrees = uiState.headingDegrees,
-          hasGpsFix = uiState.hasGpsFix,
-          mapZoom = uiState.mapZoom,
-          mapTiltDegrees = uiState.mapTiltDegrees,
-          mapPanEastDeg = uiState.mapPanEastDeg,
-          mapPanNorthDeg = uiState.mapPanNorthDeg,
-          isMapPinching = uiState.isMapPinching,
-          modifier = Modifier.fillMaxWidth().weight(1f),
-        )
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-          val d = uiState.distanceMeters.coerceAtLeast(0f)
-          Text(if (d >= 1000f) fmt("%.2f", d / 1000f) else "${d.roundToInt()}", style = IosType.headline, modifier = Modifier.testTag("dashboard_distance_text"))
-          Text(if (d >= 1000f) "KM" else "METERS", style = IosType.caption, modifier = Modifier.testTag("dashboard_distance_unit_text"))
-          Text(fmt("%.1f m/s", uiState.speedMps.coerceAtLeast(0f)), style = hudText(10.sp, Ios.Cyan), modifier = Modifier.testTag("dashboard_speed_text"))
-          Spacer(Modifier.weight(1f))
-          if (!uiState.hasLocationPermission) {
-            Box(
-              Modifier.testTag("location_permission_pill")
-                .minimumInteractiveComponentSize()
-                .clip(RoundedCornerShape(50))
-                .background(Ios.Blue)
-                .clickable(onClick = onRequestLocationPermission)
-                .padding(horizontal = 10.dp, vertical = 4.dp),
-            ) {
-              Text("Enable GPS", style = hudText(10.sp, Color.White))
-            }
+private fun EnvironmentBody(s: HudUiState, onRequestLocationPermission: () -> Unit) {
+  val h = s.habitability
+  val suit = s.suit
+  Row(Modifier.fillMaxSize().testTag("dashboard_page_environment"), horizontalArrangement = Arrangement.spacedBy(Gap)) {
+    BentoCard("Live map · Jezero", Modifier.weight(1.3f).fillMaxHeight()) {
+      MarsMolaMapCanvas(
+        trackPoints = s.marsTrackPoints,
+        headingDegrees = s.headingDegrees,
+        hasGpsFix = s.hasGpsFix,
+        mapZoom = s.mapZoom,
+        mapTiltDegrees = s.mapTiltDegrees,
+        mapPanEastDeg = s.mapPanEastDeg,
+        mapPanNorthDeg = s.mapPanNorthDeg,
+        isMapPinching = s.isMapPinching,
+        modifier = Modifier.fillMaxWidth().weight(1f).padding(vertical = 2.dp),
+      )
+      Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        val d = s.distanceMeters.coerceAtLeast(0f)
+        Text(if (d >= 1000f) fmt("%.2f", d / 1000f) else "${d.roundToInt()}", style = hudText(11.sp), modifier = Modifier.testTag("dashboard_distance_text"))
+        Text(if (d >= 1000f) "KM" else "METERS", style = hudText(7.5.sp, Vision.Text2), modifier = Modifier.testTag("dashboard_distance_unit_text"))
+        Text(fmt("%.1f m/s", s.speedMps.coerceAtLeast(0f)), style = hudText(9.sp, Ios.Cyan), modifier = Modifier.testTag("dashboard_speed_text"))
+        Spacer(Modifier.weight(1f))
+        if (!s.hasLocationPermission) {
+          Box(
+            Modifier.testTag("location_permission_pill")
+              .minimumInteractiveComponentSize()
+              .clip(RoundedCornerShape(50))
+              .background(Ios.Blue)
+              .clickable(onClick = onRequestLocationPermission)
+              .padding(horizontal = 8.dp, vertical = 3.dp),
+          ) {
+            Text("Enable GPS", style = hudText(9.sp, Color.White))
           }
         }
       }
-      Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text("Outside · Jezero (Perseverance MEDA model)", style = IosType.caption, maxLines = 1)
-        GroupedList {
-          ListRow("Mars air", fmt("%.0f °C · %.0f Pa", h.outside.airTempC, h.outside.pressurePa), dot = Ios.Orange, valueTag = "outside_air_text")
-          ListRow(
-            "Wind · sun",
-            fmt("%.1f m/s · %s", uiState.windSpeedMps, if (h.outside.isDaylight) "day" else "night"),
-            if (uiState.windSpeedMps >= 15f) Ios.Orange else Ios.Label,
-            dot = Ios.Mint,
-            separator = false,
-          )
+    }
+    Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(Gap)) {
+      Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Gap)) {
+        BentoCard("Air °C", Modifier.weight(1f)) {
+          BigValue(fmt("%.0f", h.outside.airTempC), size = 15.sp)
+          SmallNote(fmt("%.0f Pa", h.outside.pressurePa), tag = "outside_air_text")
         }
-        Text("Inside · ${AxemuProfile.NAME} suit", style = IosType.caption)
-        GroupedList {
-          ListRow("Pressure", fmt("%.2f psi", s.suitPressureTotalPsi), if (s.isPressureNominal) Ios.Green else Ios.Red, dot = Ios.Blue, valueTag = "suit_pressure_text")
-          ListRow(
-            "Helmet CO₂",
-            fmt("%.1f mmHg", s.helmetCo2MmHg),
+        BentoCard("Suit psi", Modifier.weight(1f)) {
+          BigValue(fmt("%.2f", suit.suitPressureTotalPsi), null, if (suit.isPressureNominal) Ios.Label else Ios.Red, 15.sp, "suit_pressure_text")
+          SmallNote(fmt("%.0f °C in", suit.suitTempC))
+        }
+      }
+      Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(Gap)) {
+        BentoCard("CO₂ mmHg", Modifier.weight(1f)) {
+          BigValue(
+            fmt("%.1f", suit.helmetCo2MmHg),
+            null,
             when {
-              s.helmetCo2MmHg >= 6f -> Ios.Red
-              s.helmetCo2MmHg >= 3f -> Ios.Orange
-              else -> Ios.Green
+              suit.helmetCo2MmHg >= 6f -> Ios.Red
+              suit.helmetCo2MmHg >= 3f -> Ios.Orange
+              else -> Ios.Label
             },
-            dot = Ios.Purple,
-            valueTag = "suit_helmet_co2_text",
+            15.sp,
+            "suit_helmet_co2_text",
           )
-          ListRow("Temperature", fmt("%.1f °C", s.suitTempC), dot = Ios.Red)
-          ListRow(
-            "Light · noise",
-            (h.lightLux?.let { fmt("%.0f lx", it) } ?: if (h.helmetLightsAdvised) "Lights on" else "—") + " · " + h.noiseLabel.lowercase(),
-            if (h.helmetLightsAdvised) Ios.Yellow else Ios.Label,
-            dot = Ios.Yellow,
-          )
-          ListRow("Cold soak", fmt("%.0f / %.0f min", h.coldSoakMinutes, AxemuProfile.RATED_COLD_SOAK_MIN), if (h.coldSoakMinutes > AxemuProfile.RATED_COLD_SOAK_MIN * 0.75) Ios.Orange else Ios.Label, dot = Ios.Cyan, separator = false)
         }
+        BentoCard("Cold min", Modifier.weight(1f)) {
+          BigValue(fmt("%.0f", h.coldSoakMinutes), "/ ${AxemuProfile.RATED_COLD_SOAK_MIN.toInt()}", size = 15.sp)
+        }
+      }
+      BentoCard("Light · noise · ${AxemuProfile.NAME}", Modifier.fillMaxWidth().weight(1f)) {
+        SmallNote(
+          listOfNotNull(
+              h.lightLux?.let { fmt("%.0f lx", it) },
+              if (h.helmetLightsAdvised) "helmet lights on" else null,
+              h.noiseLabel.takeIf { it != "—" }?.lowercase(),
+              if (h.outside.isDaylight) "daylight" else "night",
+            )
+            .joinToString(" · "),
+          Ios.Label,
+        )
       }
     }
   }
 }
 
-// ===================================================================== DRILLS (look down)
+// ===================================================================== Drills (look down / + button)
 
 @Composable
-internal fun DrillsTile(activeDrill: EmergencyDrill) {
+private fun DrillsBody(activeDrill: EmergencyDrill) {
   val drills = EmergencyDrill.activeDrills
-  val pillColor =
-    when {
-      activeDrill == EmergencyDrill.NONE -> Ios.Secondary
-      activeDrill.isCritical -> Ios.Red
-      else -> Ios.Orange
-    }
-  Column(TilePadding.fillMaxSize().testTag("dashboard_page_drills"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-    TileHeader(DashboardPage.DRILLS, if (activeDrill == EmergencyDrill.NONE) "Standby" else "${activeDrill.code} ACTIVE", pillColor, "drills_status_pill")
-    val rows = (drills.size + 1) / 2
-    Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+  val rows = (drills.size + 1) / 2
+  Column(Modifier.fillMaxSize().testTag("dashboard_page_drills"), verticalArrangement = Arrangement.spacedBy(Gap)) {
+    Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.spacedBy(Gap)) {
       for (col in 0..1) {
-        GroupedList(Modifier.weight(1f)) {
+        Column(Modifier.weight(1f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
           for (i in 0 until rows) {
             val d = drills.getOrNull(i + col * rows) ?: continue
             val active = d == activeDrill
-            Box(Modifier.testTag("drill_item_${d.number}")) {
-              ListRow(
-                "E${d.number}  ${d.title}",
-                d.impactSummary,
-                if (active) (if (d.isCritical) Ios.Red else Ios.Orange) else Ios.Secondary,
-                dot = if (active) Ios.Red else Ios.Fill,
-                separator = i < rows - 1,
-              )
+            val accent = if (d.isCritical) Ios.Red else Ios.Orange
+            Row(
+              Modifier.fillMaxWidth()
+                .weight(1f)
+                .testTag("drill_item_${d.number}")
+                .clip(RoundedCornerShape(10.dp))
+                .background(if (active) accent.copy(alpha = 0.28f) else Vision.Card)
+                .padding(horizontal = 8.dp),
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              Text("E${d.number}", style = hudText(9.sp, if (active) accent else Vision.Text2), modifier = Modifier.width(24.dp))
+              Text(d.title, style = hudText(9.sp), maxLines = 1, modifier = Modifier.weight(1f))
+              Text(d.impactSummary, style = hudText(7.5.sp, Vision.Text3, FontWeight.Normal), maxLines = 1)
             }
           }
         }
       }
     }
-    Text("Say \"emergency 1-10\" to rehearse · thumbs down to clear", style = IosType.footnote)
+    SmallNote("Say \"emergency 1-10\" to rehearse · thumbs down to clear")
   }
 }

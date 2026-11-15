@@ -105,7 +105,7 @@ data class GestureUpdate(
 
 /**
  * Gesture vocabulary (one hand is enough for everything):
- *  - Open palm, hold 0.6 s ............ open dashboard (when closed)
+ *  - Open palm, hold 0.6 s ............ open dashboard (hold 1 s while open: close)
  *  - Open hand swipe left / right ...... previous / next tile (wraps around the ring)
  *  - Closed fist, hold 0.6 s ........... close dashboard
  *  - Pointing up, hold 0.5 s ........... recenter tiles in front of you
@@ -235,7 +235,7 @@ class HandGestureClassifier {
     }
     holdLastSeenMs = timestampMs
 
-    val needed = holdDurationFor(action)
+    val needed = if (dominantPose == HandPose.OPEN_PALM && action == GestureAction.CLOSE_DASHBOARD) PALM_CLOSE_HOLD_MS else holdDurationFor(action)
     val progress = ((timestampMs - holdStartMs).toFloat() / needed).coerceIn(0f, 1f)
     if (progress >= 1f) {
       awaitingReleaseOf = dominantPose
@@ -265,7 +265,7 @@ class HandGestureClassifier {
   private fun actionFor(pose: HandPose, mode: DashboardMode): GestureAction? {
     val open = mode != DashboardMode.CLOSED
     return when (pose) {
-      HandPose.OPEN_PALM -> if (!open) GestureAction.OPEN_DASHBOARD else null
+      HandPose.OPEN_PALM -> if (!open) GestureAction.OPEN_DASHBOARD else GestureAction.CLOSE_DASHBOARD
       HandPose.CLOSED_FIST -> if (open) GestureAction.CLOSE_DASHBOARD else null
       HandPose.POINTING_UP -> if (open) GestureAction.RECENTER else null
       HandPose.THUMB_UP -> GestureAction.ACKNOWLEDGE
@@ -550,6 +550,7 @@ class HandGestureClassifier {
     const val HOLD_GAP_GRACE_MS = 350L
     const val HOLD_MAX_TRAVEL = 0.09f
     const val ACTION_COOLDOWN_MS = 650L
+    const val PALM_CLOSE_HOLD_MS = 1000f
 
     const val PINCH_MAX_GAP_RATIO = 0.45f
     const val PINCH_GAP_RESET_MS = 260L

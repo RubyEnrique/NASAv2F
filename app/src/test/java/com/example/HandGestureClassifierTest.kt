@@ -87,6 +87,26 @@ class HandGestureClassifierTest {
   }
 
   @Test
+  fun palmHold_togglesOpenAndClosed_butSwipingHandDoesNotClose() {
+    val c = HandGestureClassifier()
+    val palm = listOf(obs(openPalm(), HandPose.OPEN_PALM))
+    hold(c, palm, 0L, 560L, DashboardMode.CLOSED)
+    assertEquals(GestureAction.OPEN_DASHBOARD, c.process(palm, 610L, DashboardMode.CLOSED).action)
+    c.process(emptyList(), 900L, DashboardMode.PERMANENT) // hand lowered -> release
+    hold(c, palm, 1_600L, 2_400L, DashboardMode.PERMANENT)
+    assertNull("needs the longer 1 s hold", c.process(palm, 2_500L, DashboardMode.PERMANENT).action)
+    assertEquals(GestureAction.CLOSE_DASHBOARD, c.process(palm, 2_620L, DashboardMode.PERMANENT).action)
+
+    val moving = HandGestureClassifier()
+    var closed = false
+    for (i in 0..40) {
+      val u = moving.process(listOf(obs(openPalm(dx = -0.15f + (i % 10) * 0.03f), HandPose.OPEN_PALM)), 10_000L + i * 40L, DashboardMode.PERMANENT)
+      if (u.action == GestureAction.CLOSE_DASHBOARD) closed = true
+    }
+    assertFalse("a sweeping palm never closes the window", closed)
+  }
+
+  @Test
   fun heuristicFallback_recognisesPalmWithoutClassifierCategory() {
     val c = HandGestureClassifier()
     assertEquals(HandPose.OPEN_PALM, c.resolvePose(obs(openPalm())))

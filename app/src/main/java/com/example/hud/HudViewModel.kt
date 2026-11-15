@@ -361,7 +361,7 @@ class HudViewModel(
 
     // Habitability
     if (dtSec > 0 && outside.airTempC < AxemuProfile.COLD_SOAK_BELOW_C) coldSoakMinutes += dtSec / 60.0
-    val noise = if (state.mic.calibrating) null else state.mic.noiseFloorDb
+    val noise = if (state.mic.calibrating || state.mic.levelDb <= -89f) null else state.mic.noiseFloorDb
     val habitability =
       HabitabilityState(
         suitTempC = suit.suitTempC,

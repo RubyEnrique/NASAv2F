@@ -32,6 +32,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -67,6 +69,9 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+
+/** Monochrome rendering of the MOLA relief (colour is reserved for status). */
+private val GRAYSCALE = ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(0f) })
 
 data class MarsTrackPoint(
   val eastMeters: Float,
@@ -361,9 +366,9 @@ fun MarsMolaMapCanvas(
           Brush.radialGradient(
             colors =
               listOf(
-                Color(0xFF1A4348),
-                Color(0xFF153147),
-                Color(0xFF101D33),
+                Color(0xFF3A3A3C),
+                Color(0xFF2C2C2E),
+                Color(0xFF1C1C1E),
               ),
             center = Offset(w * 0.48f, h * 0.45f),
             radius = max(w, h) * 0.75f,
@@ -393,6 +398,7 @@ fun MarsMolaMapCanvas(
             dstOffset = IntOffset(dstX, dstY),
             dstSize = IntSize(drawTileSizePx, drawTileSizePx),
             alpha = 0.92f,
+            colorFilter = GRAYSCALE,
           )
         }
         drawRect(color = ObsidianBlack.copy(alpha = 0.18f))
@@ -403,8 +409,8 @@ fun MarsMolaMapCanvas(
           val contourColor =
             when {
               idx <= 1 -> IosSfBlue.copy(alpha = 0.24f)
-              idx == 2 -> IosSfGreen.copy(alpha = 0.20f)
-              else -> IosSfAmber.copy(alpha = 0.18f)
+              idx == 2 -> SpecularWhite.copy(alpha = 0.16f)
+              else -> SpecularWhite.copy(alpha = 0.12f)
             }
           drawCircle(
             color = contourColor,
