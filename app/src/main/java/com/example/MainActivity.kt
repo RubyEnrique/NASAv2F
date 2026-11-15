@@ -28,6 +28,7 @@ import com.example.alert.AlertAnnouncer
 import com.example.hud.HudEvent
 import com.example.hud.HudViewModel
 import com.example.hud.SpatialHudScreen
+import com.example.crew.LanCrewLink
 import com.example.nasa.DonkiClient
 import com.example.sensor.BatteryStatusMonitor
 import com.example.sensor.BodySensorMonitor
@@ -51,6 +52,7 @@ class MainActivity : ComponentActivity() {
   private lateinit var voiceCommandRecognizer: VoiceCommandRecognizer
   private lateinit var alertAnnouncer: AlertAnnouncer
   private lateinit var bodySensorMonitor: BodySensorMonitor
+  private lateinit var crewLink: LanCrewLink
 
   private var isPermissionPromptPending = false
   private var hasAttemptedLocationPrompt = false
@@ -96,11 +98,22 @@ class MainActivity : ComponentActivity() {
         onLocationSample = viewModel::onLocationSample,
         onFixStatusChanged = viewModel::onGpsFixStatusChanged,
         onVectorDelta = viewModel::onGpsVectorDelta,
+        onAbsoluteFix = viewModel::onAbsoluteFix,
       )
     voiceCommandRecognizer = VoiceCommandRecognizer(this, viewModel::onVoiceCommand, viewModel::onMicStatus)
     alertAnnouncer = AlertAnnouncer(this) { speaking -> voiceCommandRecognizer.setMuted(speaking) }
     bodySensorMonitor = BodySensorMonitor(this, viewModel::onStep, viewModel::onLightLux)
     startSpaceWeatherSync()
+    val prefs = getSharedPreferences("crew", MODE_PRIVATE)
+    val crewId =
+      prefs.getString("id", null)
+        ?: java.util.UUID.randomUUID().toString().take(4).uppercase().also { prefs.edit().putString("id", it).apply() }
+    val crewName = "Crew-$crewId"
+    viewModel.setCrewIdentity(crewId, crewName)
+    // Same-network crew link: runs for the whole life of the activity (also while idle), no extra permissions.
+    crewLink = LanCrewLink(this, crewId, onStatus = { viewModel.onCrewPacket(it) }, onLinkChanged = viewModel::onCrewLinkChanged)
+    crewLink.start()
+    startCrewBroadcast()
 
     val hasCamera = hasPermission(Manifest.permission.CAMERA)
     val hasLocation = hasLocationPermission()
@@ -259,6 +272,16 @@ class MainActivity : ComponentActivity() {
     }
   }
 
+  /** Shares this wearer's status with everyone on the same network every second. */
+  private fun startCrewBroadcast() {
+    lifecycleScope.launch(Dispatchers.IO) {
+      while (isActive) {
+        crewLink.broadcast(viewModel.crewOutbound())
+        delay(1_000L)
+      }
+    }
+  }
+
   private fun configureImmersiveWindow() {
     window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -323,6 +346,7 @@ class MainActivity : ComponentActivity() {
   }
 
   override fun onDestroy() {
+    crewLink.stop()
     alertAnnouncer.shutdown()
     super.onDestroy()
   }

@@ -372,12 +372,34 @@ private fun DistanceBody(s: HudUiState) {
       ) {
         if (drill == EmergencyDrill.NONE) {
           SmallNote("Earth can't answer in time. Decide here, then report.", Vision.Text2, maxLines = 2)
+          SmallNote(crewSummary(s), if (s.crew.any { it.emergency }) Ios.Red else Ios.Label, tag = "crew_summary_text")
+          SmallNote(crewDiagnostics(s), Vision.Text3, maxLines = 2, tag = "crew_diagnostics_text")
         } else {
           checklistFor(drill).forEachIndexed { i, step -> SmallNote("${i + 1}. $step", Ios.Label) }
         }
       }
     }
   }
+}
+
+internal fun crewSummary(s: HudUiState): String {
+  val l = s.crewLink
+  if (!l.active) return "Crew link off" + (l.error?.let { " · $it" } ?: "")
+  val nearest = s.crew.firstOrNull { it.distanceMeters != null }
+  val help = s.crew.firstOrNull { it.emergency }
+  return when {
+    help != null -> "${help.name} needs help" + (help.distanceMeters?.let { " · ${it.roundToInt()} m" } ?: " · no GPS")
+    s.crew.isEmpty() -> "Crew: searching on Wi-Fi"
+    nearest != null -> "Crew ${s.crew.size} · nearest ${nearest.distanceMeters!!.roundToInt()} m"
+    else -> "Crew ${s.crew.size} linked · waiting for GPS to map"
+  }
+}
+
+/** Field diagnostics for the crew link: proves whether this phone or the network is the problem. */
+internal fun crewDiagnostics(s: HudUiState): String {
+  val l = s.crewLink
+  return "${s.crewSelfName} · ${l.localIp} · sent ${l.sent} · self ${if (l.heardSelf > 0) "ok" else "none"} · peers ${l.heardOthers}" +
+    (l.error?.let { " · $it" } ?: "")
 }
 
 /** Short self-sufficiency prompts for training drills (not official NASA procedures). */
@@ -455,6 +477,7 @@ private fun EnvironmentBody(s: HudUiState, onRequestLocationPermission: () -> Un
         mapPanEastDeg = s.mapPanEastDeg,
         mapPanNorthDeg = s.mapPanNorthDeg,
         isMapPinching = s.isMapPinching,
+        crew = s.crew,
         modifier = Modifier.fillMaxWidth().weight(1f).padding(vertical = 2.dp),
       )
       Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {

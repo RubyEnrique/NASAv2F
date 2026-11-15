@@ -61,6 +61,7 @@ fun GameGradientCompass(
   batteryPercent: Int,
   modifier: Modifier = Modifier,
   timeTextOverride: String? = null,
+  crew: List<com.example.crew.CrewMember> = emptyList(),
 ) {
   val normalized = ((headingDegrees % 360f) + 360f) % 360f
   val textMeasurer = rememberTextMeasurer()
@@ -198,6 +199,26 @@ fun GameGradientCompass(
           }
         }
         tickDeg += 5
+      }
+
+      // Crewmates: a dot at their bearing (red when they need help); a chevron at the edge
+      // when they are outside the visible span.
+      for (m in crew) {
+        val bearing = m.bearingDeg ?: continue
+        var delta = (bearing - normalized) % 360f
+        if (delta > 180f) delta -= 360f
+        if (delta < -180f) delta += 360f
+        val c = if (m.emergency) IosSfRed else SpecularWhite
+        if (abs(delta) <= halfSpanDeg) {
+          val x = centerX + delta * pxPerDeg
+          drawCircle(c, 3.dp.toPx(), Offset(x, arcCenterY + curveOffsetY(x) - 4.5.dp.toPx()))
+        } else {
+          val x = if (delta < 0) 3.dp.toPx() else w - 3.dp.toPx()
+          val dir = if (delta < 0) 1f else -1f
+          val y = arcCenterY - 2.dp.toPx()
+          drawLine(c, Offset(x, y), Offset(x + dir * 4.dp.toPx(), y - 3.dp.toPx()), 1.4.dp.toPx(), StrokeCap.Round)
+          drawLine(c, Offset(x, y), Offset(x + dir * 4.dp.toPx(), y + 3.dp.toPx()), 1.4.dp.toPx(), StrokeCap.Round)
+        }
       }
     }
 

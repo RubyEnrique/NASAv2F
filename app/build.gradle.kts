@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.spatialhud.qxvrmk"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    versionCode = 5
+    versionName = "5"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

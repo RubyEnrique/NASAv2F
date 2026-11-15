@@ -86,7 +86,7 @@ enum class GestureAction(val label: String) {
   CLOSE_DASHBOARD("CLOSE"),
   NEXT_TILE("NEXT"),
   PREVIOUS_TILE("BACK"),
-  RECENTER("RECENTER"),
+  TOGGLE_CENTER_LOCK("CENTER LOCK"),
   ACKNOWLEDGE("ACK ALERT"),
   TOGGLE_EYE_PREVIEW("EYE CAM"),
   CLEAR_DRILL("CLEAR DRILL"),
@@ -107,8 +107,8 @@ data class GestureUpdate(
  * Gesture vocabulary (one hand is enough for everything):
  *  - Open palm, hold 0.6 s ............ open dashboard (hold 1 s while open: close)
  *  - Open hand swipe left / right ...... previous / next tile (wraps around the ring)
- *  - Closed fist, hold 0.6 s ........... close dashboard
- *  - Pointing up, hold 0.5 s ........... recenter tiles in front of you
+ *  - Closed fist (all 4 fingers), 0.9 s  close dashboard
+ *  - Point (any direction), hold 0.7 s  toggle center lock (window always in front)
  *  - Thumb up, hold 0.4 s .............. acknowledge / silence alerts
  *  - Victory (V), hold 0.6 s ........... toggle eye-camera preview
  *  - Thumb down, hold 0.9 s ............ clear the active drill
@@ -255,8 +255,10 @@ class HandGestureClassifier {
   internal fun resolvePose(obs: HandObservation): HandPose {
     if (obs.pose != HandPose.NONE && obs.poseScore >= MIN_POSE_SCORE) return obs.pose
     val lm = obs.landmarks
+    // Order matters: a pointing hand has 3 curled fingers and must never be read as a fist.
     return when {
       isOpenPalmUp(lm) -> HandPose.OPEN_PALM
+      isPointing(lm) -> HandPose.POINTING_UP
       isClosedFist(lm) -> HandPose.CLOSED_FIST
       else -> HandPose.NONE
     }
@@ -267,7 +269,7 @@ class HandGestureClassifier {
     return when (pose) {
       HandPose.OPEN_PALM -> if (!open) GestureAction.OPEN_DASHBOARD else GestureAction.CLOSE_DASHBOARD
       HandPose.CLOSED_FIST -> if (open) GestureAction.CLOSE_DASHBOARD else null
-      HandPose.POINTING_UP -> if (open) GestureAction.RECENTER else null
+      HandPose.POINTING_UP -> if (open) GestureAction.TOGGLE_CENTER_LOCK else null
       HandPose.THUMB_UP -> GestureAction.ACKNOWLEDGE
       HandPose.VICTORY -> if (open) GestureAction.TOGGLE_EYE_PREVIEW else null
       HandPose.THUMB_DOWN -> GestureAction.CLEAR_DRILL
@@ -279,8 +281,9 @@ class HandGestureClassifier {
   private fun holdDurationFor(action: GestureAction): Float =
     when (action) {
       GestureAction.ACKNOWLEDGE -> 400f
-      GestureAction.RECENTER -> 500f
+      GestureAction.TOGGLE_CENTER_LOCK -> 700f
       GestureAction.CLEAR_DRILL -> 900f
+      GestureAction.CLOSE_DASHBOARD -> 900f
       else -> 600f
     }
 
@@ -518,7 +521,25 @@ class HandGestureClassifier {
         isFingerCurledForgiving(wrist, landmarks[RING_MCP], landmarks[RING_PIP], landmarks[RING_TIP], palmScale),
         isFingerCurledForgiving(wrist, landmarks[PINKY_MCP], landmarks[PINKY_PIP], landmarks[PINKY_TIP], palmScale),
       ).count { it }
-    return curledFingers >= 3
+    // All four fingers must be curled: an extended index finger (pointing) is not a fist.
+    return curledFingers >= 4
+  }
+
+  /** Index finger extended (any direction) with at least two of the other fingers curled. */
+  internal fun isPointing(landmarks: List<HandLandmarkPoint>): Boolean {
+    if (landmarks.size < 21) return false
+    val wrist = landmarks[WRIST]
+    val palmScale = handPalmScale(landmarks)
+    if (palmScale < MIN_PALM_SIZE) return false
+    val indexOut = isFingerExtendedAnyAngle(wrist, landmarks[INDEX_MCP], landmarks[INDEX_PIP], landmarks[INDEX_TIP])
+    if (!indexOut) return false
+    val othersCurled =
+      listOf(
+        isFingerCurledForgiving(wrist, landmarks[MIDDLE_MCP], landmarks[MIDDLE_PIP], landmarks[MIDDLE_TIP], palmScale),
+        isFingerCurledForgiving(wrist, landmarks[RING_MCP], landmarks[RING_PIP], landmarks[RING_TIP], palmScale),
+        isFingerCurledForgiving(wrist, landmarks[PINKY_MCP], landmarks[PINKY_PIP], landmarks[PINKY_TIP], palmScale),
+      ).count { it }
+    return othersCurled >= 2
   }
 
   private fun isFingerExtendedUpright(

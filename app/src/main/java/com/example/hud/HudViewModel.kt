@@ -4,6 +4,10 @@ import android.os.SystemClock
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.body.BodyMaintenanceState
+import com.example.crew.CrewLinkStats
+import com.example.crew.CrewMember
+import com.example.crew.CrewRoster
+import com.example.crew.CrewStatus
 import com.example.body.GravityLoadModel
 import com.example.nasa.Mars24
 import com.example.nasa.MarsTime
@@ -145,6 +149,13 @@ data class HudUiState(
   val currentPage: DashboardPage = DashboardPage.HOME,
   val anchorYawDegrees: Float = 0f,
   val anchorPitchDegrees: Float = 0f,
+  /** Center lock: the window follows the head instead of hanging in space. */
+  val centerLocked: Boolean = false,
+  // Crew link (phone-to-phone)
+  val crew: List<CrewMember> = emptyList(),
+  val crewLink: CrewLinkStats = CrewLinkStats(),
+  val crewSelfName: String = "",
+  val hasAbsoluteFix: Boolean = false,
   val lastSwipeDirection: SwipeDirection? = null,
   val swipeCueId: Long = 0L,
 ) {
@@ -247,6 +258,14 @@ class HudViewModel(
   private var lightLux: Float? = null
   private var coldSoakMinutes = 0.0
   private val handTrack = ArrayDeque<Pair<Float, Float>>()
+
+  // Crew link
+  private var crewSelfId = "self"
+  private var crewRoster = CrewRoster(crewSelfId)
+  private val crewLock = Any()
+  private var selfLat: Double? = null
+  private var selfLon: Double? = null
+  private val crewEmergencyAnnouncedMs = HashMap<String, Long>()
   private var motorSteadinessSmoothed: Double? = null
 
   private fun safeElapsedRealtimeMs(): Long {
@@ -297,6 +316,7 @@ class HudViewModel(
     _uiState.update { state -> applyTelemetrySnapshot(state, nowMs, dtSec = 1.0) }
     _uiState.update { state -> applyPredictions(state, nowMs, wallClockMs(), dtSec = 1.0) }
     evaluateAlerts(nowMs)
+    refreshCrew(wallClockMs())
   }
 
   private fun wallClockMs(): Long = System.currentTimeMillis()
@@ -392,6 +412,76 @@ class HudViewModel(
     spaceWeatherEvents = events
     spaceWeatherFetchedAtMs = fetchedAtMs
     _uiState.update { it.copy(spaceWeather = SpaceWeatherForecaster.evaluate(events, wallClockMs(), fetchedAtMs)) }
+  }
+
+  // ---------------------------------------------------------------- Crew link
+
+  fun setCrewIdentity(id: String, name: String) {
+    synchronized(crewLock) {
+      crewSelfId = id
+      crewRoster = CrewRoster(id)
+    }
+    _uiState.update { it.copy(crewSelfName = name) }
+  }
+
+  fun onAbsoluteFix(lat: Double, lon: Double) {
+    synchronized(crewLock) {
+      selfLat = lat
+      selfLon = lon
+    }
+    if (!_uiState.value.hasAbsoluteFix) _uiState.update { it.copy(hasAbsoluteFix = true) }
+  }
+
+  fun onCrewLinkChanged(stats: CrewLinkStats) {
+    _uiState.update { if (it.crewLink == stats) it else it.copy(crewLink = stats) }
+  }
+
+  fun onCrewPacket(status: CrewStatus, nowMs: Long = wallClockMs()) {
+    synchronized(crewLock) { crewRoster.onPacket(status, nowMs) }
+    refreshCrew(nowMs)
+  }
+
+  /** True when this wearer should appear to the crew as needing help. */
+  private fun selfEmergency(s: HudUiState): Pair<Boolean, String> =
+    when {
+      s.activeDrill != EmergencyDrill.NONE -> true to "${s.activeDrill.code} ${s.activeDrill.title}"
+      s.cognitive.level == CognitiveLevel.EMERGENCY && !s.alertAcknowledged -> true to "Cognitive load ${s.cognitive.index}"
+      else -> false to ""
+    }
+
+  fun crewOutbound(nowMs: Long = wallClockMs()): CrewStatus {
+    val s = _uiState.value
+    val (emergency, reason) = selfEmergency(s)
+    val (lat, lon) = synchronized(crewLock) { selfLat to selfLon }
+    return CrewStatus(
+      id = crewSelfId,
+      name = s.crewSelfName.ifBlank { crewSelfId },
+      lat = lat,
+      lon = lon,
+      headingDeg = s.headingDegrees,
+      heartRateBpm = if (s.isBiometricSensorLost) null else s.heartRateBpm,
+      cognitiveLoad = s.cognitive.index,
+      emergency = emergency,
+      reason = reason,
+      sentAtMs = nowMs,
+    )
+  }
+
+  /** Recomputes crew distances/bearings and announces any crewmate who newly needs help. */
+  internal fun refreshCrew(nowMs: Long) {
+    val members = synchronized(crewLock) { crewRoster.members(nowMs, selfLat, selfLon) }
+    _uiState.update { it.copy(crew = members) }
+    for (m in members.filter { it.emergency }) {
+      val last = crewEmergencyAnnouncedMs[m.id]
+      if (last == null || nowMs - last >= CREW_ALERT_REPEAT_MS) {
+        crewEmergencyAnnouncedMs[m.id] = nowMs
+        val where =
+          if (m.distanceMeters != null && m.bearingDeg != null) ", ${m.distanceMeters.roundToInt()} meters, bearing ${m.bearingDeg.roundToInt()}"
+          else ", location unknown"
+        _events.tryEmit(HudEvent.Speak("Crew ${m.name} needs help$where. ${m.reason}."))
+      }
+    }
+    crewEmergencyAnnouncedMs.keys.retainAll(members.filter { it.emergency }.map { it.id }.toSet())
   }
 
   fun onStep() {
@@ -645,6 +735,15 @@ class HudViewModel(
 
   private fun withFocusFromHead(state: HudUiState): HudUiState {
     if (!state.isDashboardOpen || state.isMapPinching) return state
+    if (state.centerLocked) {
+      // Keep the current window straight ahead: re-anchor to the head instead of changing focus.
+      return state.copy(
+        anchorYawDegrees =
+          if (state.currentPage == DashboardPage.DRILLS) state.anchorYawDegrees else SpatialLayout.anchorYawFor(state.currentPage, state.headingDegrees),
+        anchorPitchDegrees =
+          if (state.currentPage == DashboardPage.DRILLS) state.pitchDegrees - SpatialLayout.DRILLS_PITCH_OFFSET_DEG else state.pitchDegrees,
+      )
+    }
     val focused =
       SpatialLayout.focusedPage(state.headingDegrees, state.pitchDegrees, state.anchorYawDegrees, state.anchorPitchDegrees)
     return if (focused == state.currentPage) state else state.copy(currentPage = focused)
@@ -744,6 +843,17 @@ class HudViewModel(
     _uiState.update { it.copy(lastSwipeDirection = direction, swipeCueId = it.swipeCueId + 1L) }
   }
 
+  fun toggleCenterLock() {
+    _uiState.update { it.copy(centerLocked = !it.centerLocked) }
+    recenterView()
+  }
+
+  /** Voice "end all emergencies": clear any drill, silence alerts and the crew emergency beacon. */
+  fun endAllEmergencies() {
+    setDrill(EmergencyDrill.NONE)
+    acknowledgeAlerts()
+  }
+
   fun recenterView() {
     selectDashboardPage(_uiState.value.currentPage)
   }
@@ -768,7 +878,7 @@ class HudViewModel(
           GestureAction.CLOSE_DASHBOARD -> closeDashboard()
           GestureAction.NEXT_TILE -> stepDashboardPage(SwipeDirection.NEXT)
           GestureAction.PREVIOUS_TILE -> stepDashboardPage(SwipeDirection.PREVIOUS)
-          GestureAction.RECENTER -> recenterView()
+          GestureAction.TOGGLE_CENTER_LOCK -> toggleCenterLock()
           GestureAction.ACKNOWLEDGE -> acknowledgeAlerts()
           GestureAction.TOGGLE_EYE_PREVIEW -> toggleEyePreview()
           GestureAction.CLEAR_DRILL -> setDrill(EmergencyDrill.NONE)
@@ -864,6 +974,8 @@ class HudViewModel(
         VoiceCommand.MAP_ZOOM_OUT -> if (open && state.currentPage == DashboardPage.ENVIRONMENT) adjustMapZoom(-VOICE_ZOOM_STEP)
         VoiceCommand.MAP_RECENTER -> if (open && state.currentPage == DashboardPage.ENVIRONMENT) recenterMap()
         VoiceCommand.RECENTER_VIEW -> if (open) recenterView()
+        VoiceCommand.CENTER_LOCK -> toggleCenterLock()
+        VoiceCommand.END_ALL_EMERGENCIES -> endAllEmergencies()
         VoiceCommand.ACKNOWLEDGE -> acknowledgeAlerts()
         VoiceCommand.TOGGLE_EYE_PREVIEW -> toggleEyePreview()
         VoiceCommand.CALIBRATE_MIC -> _events.tryEmit(HudEvent.RecalibrateMic)
@@ -895,6 +1007,7 @@ class HudViewModel(
     private const val HISTORY_POINTS = 120
     private const val OXYGEN_RESERVE_PCT = 5.0
     private const val EXERCISE_HR_BPM = 105
+    const val CREW_ALERT_REPEAT_MS = 60_000L
 
     private val WIND_CYCLE = floatArrayOf(6.4f, 6.5f, 6.4f, 6.3f, 6.4f, 6.6f, 6.5f, 6.4f)
     private const val EYE_PUBLISH_INTERVAL_MS = 250L

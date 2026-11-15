@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.mental.CognitiveLevel
 import com.example.radiation.RadiationStatus
+import kotlin.math.roundToInt
 
 /*
  * Ambient (dashboard-closed) HUD. Designed to be felt rather than read:
@@ -105,6 +106,21 @@ internal fun GlanceStrip(s: HudUiState, modifier: Modifier = Modifier) {
       },
       "glance_rad_text",
     )
+    if (s.crewLink.active) {
+      Divider()
+      val help = s.crew.firstOrNull { it.emergency }
+      val nearest = help ?: s.crew.firstOrNull()
+      Glance(
+        if (help != null) "SOS ${help.name.removePrefix("Crew-")}" else "CREW ${s.crew.size}",
+        when {
+          nearest == null -> "searching"
+          nearest.distanceMeters != null -> "${nearest.distanceMeters.roundToInt()} m"
+          else -> "linked"
+        },
+        if (help != null) Ios.Red else Vision.Text2,
+        "glance_crew_text",
+      )
+    }
     Divider()
     Row(verticalAlignment = Alignment.CenterVertically) {
       MiniRing(s.cognitive.index / 100f, levelColor(s.cognitive.level), 12.dp)

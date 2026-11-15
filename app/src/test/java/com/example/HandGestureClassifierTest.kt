@@ -82,8 +82,8 @@ class HandGestureClassifierTest {
     assertNull(c.process(palm, 3200L, DashboardMode.CLOSED).action)
 
     val fist = listOf(obs(closedFist(), HandPose.CLOSED_FIST))
-    hold(c, fist, 4000L, 4500L, DashboardMode.PERMANENT)
-    assertEquals(GestureAction.CLOSE_DASHBOARD, c.process(fist, 4620L, DashboardMode.PERMANENT).action)
+    hold(c, fist, 4000L, 4800L, DashboardMode.PERMANENT)
+    assertEquals(GestureAction.CLOSE_DASHBOARD, c.process(fist, 4920L, DashboardMode.PERMANENT).action)
   }
 
   @Test
@@ -104,6 +104,34 @@ class HandGestureClassifierTest {
       if (u.action == GestureAction.CLOSE_DASHBOARD) closed = true
     }
     assertFalse("a sweeping palm never closes the window", closed)
+  }
+
+  /** Index extended, the other three curled: the shape that used to be misread as a fist. */
+  private fun pointingHand(): List<HandLandmarkPoint> =
+    closedFist().mapIndexed { i, p ->
+      when (i) {
+        6 -> HandLandmarkPoint(0.43f, 0.40f)
+        7 -> HandLandmarkPoint(0.425f, 0.32f)
+        8 -> HandLandmarkPoint(0.42f, 0.24f)
+        else -> p
+      }
+    }
+
+  @Test
+  fun pointingIsNeverReadAsFist_andCannotCloseTheDashboard() {
+    val c = HandGestureClassifier()
+    val point = pointingHand()
+    assertFalse(c.isClosedFist(point))
+    assertEquals(HandPose.POINTING_UP, c.resolvePose(obs(point)))
+    var closed = false
+    for (t in 0L..2_000L step 33L) if (c.process(listOf(obs(point)), t, DashboardMode.PERMANENT).action == GestureAction.CLOSE_DASHBOARD) closed = true
+    assertFalse(closed)
+    // A real fist still closes, but only after the longer 0.9 s hold.
+    val f = HandGestureClassifier()
+    val fist = listOf(obs(closedFist(), HandPose.CLOSED_FIST))
+    hold(f, fist, 0L, 800L, DashboardMode.PERMANENT)
+    assertNull(f.process(fist, 850L, DashboardMode.PERMANENT).action)
+    assertEquals(GestureAction.CLOSE_DASHBOARD, f.process(fist, 920L, DashboardMode.PERMANENT).action)
   }
 
   @Test
@@ -135,7 +163,7 @@ class HandGestureClassifierTest {
       return c.process(hands, hold, mode).action
     }
     assertEquals(GestureAction.ACKNOWLEDGE, fire(HandPose.THUMB_UP, DashboardMode.CLOSED, 420L))
-    assertEquals(GestureAction.RECENTER, fire(HandPose.POINTING_UP, DashboardMode.PERMANENT, 520L))
+    assertEquals(GestureAction.TOGGLE_CENTER_LOCK, fire(HandPose.POINTING_UP, DashboardMode.PERMANENT, 720L))
     assertEquals(GestureAction.TOGGLE_EYE_PREVIEW, fire(HandPose.VICTORY, DashboardMode.PERMANENT, 620L))
     assertEquals(GestureAction.CLEAR_DRILL, fire(HandPose.THUMB_DOWN, DashboardMode.PERMANENT, 920L))
     assertNull(fire(HandPose.POINTING_UP, DashboardMode.CLOSED, 2000L))
@@ -210,8 +238,15 @@ class HandGestureClassifierTest {
     vm.onPitchChanged(-30f)
     assertEquals(DashboardPage.DRILLS, vm.uiState.value.currentPage)
     vm.onPitchChanged(0f)
-    for (t in 0L..520L step 40L) vm.onHandsDetected(listOf(obs(closedFist(), HandPose.POINTING_UP)), t)
+    for (t in 0L..720L step 40L) vm.onHandsDetected(listOf(obs(closedFist(), HandPose.POINTING_UP)), t)
+    assertTrue("point toggles center lock", vm.uiState.value.centerLocked)
     assertEquals(281f - 3 * SpatialLayout.TILE_SPACING_DEG, vm.uiState.value.anchorYawDegrees, 0.01f)
+    // While locked, turning the head drags the window along instead of switching hazard.
+    vm.onHeadingChanged(330f)
+    assertEquals(DashboardPage.GRAVITY, vm.uiState.value.currentPage)
+    assertEquals(330f - 3 * SpatialLayout.TILE_SPACING_DEG, vm.uiState.value.anchorYawDegrees, 0.01f)
+    vm.onVoiceCommand(VoiceCommand.CENTER_LOCK)
+    assertFalse(vm.uiState.value.centerLocked)
   }
 
   @Test
@@ -241,6 +276,9 @@ class HandGestureClassifierTest {
     assertEquals(VoiceCommand.NAVIGATE_ENVIRONMENT, p("map"))
     assertEquals(VoiceCommand.NAVIGATE_DRILLS, p("drills"))
     assertEquals(VoiceCommand.RECENTER_VIEW, p("recenter"))
+    assertEquals(VoiceCommand.CENTER_LOCK, p("center"))
+    assertEquals(VoiceCommand.END_ALL_EMERGENCIES, p("end all emergencies"))
+    assertEquals(VoiceCommand.END_ALL_EMERGENCIES, p("all clear"))
     assertEquals(VoiceCommand.MAP_RECENTER, p("center map"))
     assertEquals(VoiceCommand.ACKNOWLEDGE, p("acknowledge"))
     assertEquals(VoiceCommand.TOGGLE_EYE_PREVIEW, p("show eyes"))

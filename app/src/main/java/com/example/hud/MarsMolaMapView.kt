@@ -58,6 +58,7 @@ import com.example.ui.theme.IosLabelSecondary
 import com.example.ui.theme.IosSfAmber
 import com.example.ui.theme.IosSfBlue
 import com.example.ui.theme.IosSfGreen
+import com.example.ui.theme.IosSfRed
 import com.example.ui.theme.ObsidianBlack
 import com.example.ui.theme.SpecularWhite
 import java.util.Locale
@@ -221,6 +222,7 @@ fun MarsMolaMapCanvas(
   mapPanEastDeg: Float = 0f,
   mapPanNorthDeg: Float = 0f,
   isMapPinching: Boolean = false,
+  crew: List<com.example.crew.CrewMember> = emptyList(),
 ) {
   val context = LocalContext.current
   val density = LocalDensity.current.density
@@ -525,6 +527,16 @@ fun MarsMolaMapCanvas(
               endY = roverCenter.y,
             ),
         )
+      }
+
+      // Crewmates relative to this wearer (white, red when they need help).
+      for (m in crew) {
+        val e = m.eastMeters ?: continue
+        val n = m.northMeters ?: continue
+        val p = Offset(roverCenter.x + e * pxPerMeter, roverCenter.y - n * pxPerMeter)
+        val c = if (m.emergency) IosSfRed else SpecularWhite
+        drawCircle(c.copy(alpha = 0.3f), 9.dp.toPx(), p)
+        drawCircle(c, 4.dp.toPx(), p)
       }
 
       drawCircle(
