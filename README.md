@@ -5,9 +5,11 @@ It watches the five hazards NASA lists for human spaceflight, estimates the wear
 
 > Built in two days for a NASA Space Apps challenge. Our target is a helmet visor HUD; for this prototype an Android phone stands in for the display.
 
-| ▶ Demo video | ⬇ Android APK (v6) | 🌐 Web demo (no phone needed) |
+| Android app (v6) | Web demo (minimal, runs in a browser) | Source |
 |---|---|---|
-| [Watch on Google Drive](VIDEO_LINK_HERE) | [Download](APK_LINK_HERE) | [Open](WEB_DEMO_LINK_HERE) |
+| [Download APK (Google Drive)](https://drive.google.com/file/d/1iGB3T-dR8KvnQVzS9Q34yFqft292CTmT/view?usp=sharing) | [Open web demo](https://3e8e8ec48fc0faf5f57dcd00f78a2827cfa.vercel.app/) | You're here |
+
+*Install the APK on Android 7.0 or newer (allow "install unknown apps"), then grant camera and microphone access.*
 
 ![Cognitive hub](docs/screenshots/isolation.png)
 
