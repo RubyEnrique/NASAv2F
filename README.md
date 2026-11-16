@@ -88,6 +88,8 @@ Voice runs **offline**. Pause briefly after each command.
 * **Research:** Barger et al. 2014 (astronaut sleep); NASA Cognition test battery (2024); blink and fatigue studies (Nature Sci. Reports 2025, FAA AM-94/17, Maffei & Angrilli 2018); PERCLOS drowsiness research
 * **Partner:** Axiom Space AxEMU suit profile (8 h EVA rating, 2 h cold rating, helmet lights)
 
+Full list of open-source licenses and the AI-use disclosure: [docs/CREDITS_AND_AI_DISCLOSURE.md](docs/CREDITS_AND_AI_DISCLOSURE.md)
+
 ## Build
 
 Android (Kotlin, Jetpack Compose, CameraX, MediaPipe, Vosk). Min SDK 24.
