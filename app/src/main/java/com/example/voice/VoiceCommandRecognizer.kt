@@ -478,16 +478,16 @@ class VoiceCommandRecognizer(
 
     private val GRAMMAR_PHRASES =
       listOf(
-        "dashboard", "dashboard open", "dashboard close", "open dashboard", "close dashboard",
+        "dashboard open", "dashboard close", "open dashboard", "close dashboard",
         "mental", "mental health", "cognitive", "readiness", "isolation", "sleep", "vitals",
         "distance", "earth", "comms", "gravity", "exercise", "fitness", "environment", "suit",
         "suit status", "radiation", "shield", "shelter", "map", "meter", "drills", "drill", "emergencies",
         "emergency zero", "emergency one", "emergency two", "emergency three", "emergency four",
         "emergency five", "emergency six", "emergency seven", "emergency eight", "emergency nine",
         "emergency ten", "clear drill", "stop drill", "reset drills", "zoom in", "zoom out",
-        "recenter", "recenter view", "center", "center lock", "keep centered", "center map", "reset map",
-        "end all emergencies", "end emergencies", "all clear", "acknowledge", "copy", "silence",
-        "eyes", "eye preview", "show eyes", "hide eyes", "calibrate", "calibrate microphone",
+        "recenter", "recenter view", "center lock", "keep centered", "center map", "reset map",
+        "end all emergencies", "end emergencies", "all clear", "acknowledge", "silence",
+        "eye preview", "show eyes", "hide eyes", "calibrate", "calibrate microphone",
         "sensitivity up", "sensitivity down", "[unk]",
       )
     private val COMMAND_GRAMMAR = GRAMMAR_PHRASES.joinToString(prefix = "[", postfix = "]") { "\"$it\"" }
@@ -497,7 +497,7 @@ class VoiceCommandRecognizer(
     private val CLEAR_DRILL_PATTERN = Regex("\\b(clear drills?|stop drills?|reset drills?)\\b")
     private val CONF_PATTERN = Regex("\"conf\"\\s*:\\s*([0-9.]+)")
 
-    fun minConfidenceFor(sensitivity: Int): Float = 0.55f + (3 - sensitivity.coerceIn(1, 5)) * 0.05f
+    fun minConfidenceFor(sensitivity: Int): Float = 0.62f + (3 - sensitivity.coerceIn(1, 5)) * 0.05f
 
     private fun parseEmergencyNumberToken(token: String): Int? =
       when (token) {
@@ -549,16 +549,16 @@ class VoiceCommandRecognizer(
         has("zoom out") -> VoiceCommand.MAP_ZOOM_OUT
         has("center map|reset map") -> VoiceCommand.MAP_RECENTER
         has("recenter|recenter view") -> VoiceCommand.RECENTER_VIEW
-        has("center|center lock|keep centered") -> VoiceCommand.CENTER_LOCK
-        has("acknowledge|copy|silence") -> VoiceCommand.ACKNOWLEDGE
-        has("eyes|eye preview|show eyes|hide eyes") -> VoiceCommand.TOGGLE_EYE_PREVIEW
+        has("center lock|keep centered") -> VoiceCommand.CENTER_LOCK
+        has("acknowledge|silence") -> VoiceCommand.ACKNOWLEDGE
+        has("eye preview|show eyes|hide eyes") -> VoiceCommand.TOGGLE_EYE_PREVIEW
         has("radiation|shield|shelter") -> VoiceCommand.NAVIGATE_RADIATION
         has("mental|mental health|cognitive|readiness|isolation|sleep|vitals") -> VoiceCommand.NAVIGATE_ISOLATION
         has("distance|earth|comms") -> VoiceCommand.NAVIGATE_DISTANCE
         has("gravity|exercise|fitness") -> VoiceCommand.NAVIGATE_GRAVITY
         has("environment|suit|suit status|map|meter") -> VoiceCommand.NAVIGATE_ENVIRONMENT
         has("drills?|emergencies") -> VoiceCommand.NAVIGATE_DRILLS
-        has("dashboard") -> VoiceCommand.TOGGLE_QUICK
+        // Presenter tuning (v6): the bare word "dashboard" no longer toggles; it is too common in speech.
         else -> null
       }
     }
