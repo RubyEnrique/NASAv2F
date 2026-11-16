@@ -134,7 +134,8 @@ class MicCalibrator(
   fun isGateOpen(): Boolean = gateOpen
 
   companion object {
-    const val DEFAULT_SENSITIVITY = 3
+    /** Presenter tuning (v6): start strict; say "sensitivity up" if it stops hearing you. */
+    const val DEFAULT_SENSITIVITY = 2
 
     fun marginDb(sensitivity: Int): Float =
       when (sensitivity.coerceIn(1, 5)) {

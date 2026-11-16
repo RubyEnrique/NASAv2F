@@ -105,9 +105,9 @@ data class GestureUpdate(
 
 /**
  * Gesture vocabulary (one hand is enough for everything):
- *  - Open palm, hold 0.6 s ............ open dashboard (hold 1 s while open: close)
+ *  - Open palm, hold 0.7 s ............ open dashboard (never closes it)
  *  - Open hand swipe left / right ...... previous / next tile (wraps around the ring)
- *  - Closed fist (all 4 fingers), 0.9 s  close dashboard
+ *  - Closed fist (confident ML), 1.2 s  close dashboard
  *  - Point (any direction), hold 0.7 s  toggle center lock (window always in front)
  *  - Thumb up, hold 0.4 s .............. acknowledge / silence alerts
  *  - Victory (V), hold 0.6 s ........... toggle eye-camera preview
@@ -255,11 +255,11 @@ class HandGestureClassifier {
   internal fun resolvePose(obs: HandObservation): HandPose {
     if (obs.pose != HandPose.NONE && obs.poseScore >= MIN_POSE_SCORE) return obs.pose
     val lm = obs.landmarks
-    // Order matters: a pointing hand has 3 curled fingers and must never be read as a fist.
+    // Geometry fallback only for harmless poses. Closing (fist) requires a confident ML label,
+    // so a half-curled hand can never shut the dashboard by accident.
     return when {
       isOpenPalmUp(lm) -> HandPose.OPEN_PALM
       isPointing(lm) -> HandPose.POINTING_UP
-      isClosedFist(lm) -> HandPose.CLOSED_FIST
       else -> HandPose.NONE
     }
   }
@@ -267,7 +267,8 @@ class HandGestureClassifier {
   private fun actionFor(pose: HandPose, mode: DashboardMode): GestureAction? {
     val open = mode != DashboardMode.CLOSED
     return when (pose) {
-      HandPose.OPEN_PALM -> if (!open) GestureAction.OPEN_DASHBOARD else GestureAction.CLOSE_DASHBOARD
+      // Presenter tuning (v6): a raised palm only ever opens; it never closes the dashboard.
+      HandPose.OPEN_PALM -> if (!open) GestureAction.OPEN_DASHBOARD else null
       HandPose.CLOSED_FIST -> if (open) GestureAction.CLOSE_DASHBOARD else null
       HandPose.POINTING_UP -> if (open) GestureAction.TOGGLE_CENTER_LOCK else null
       HandPose.THUMB_UP -> GestureAction.ACKNOWLEDGE
@@ -283,7 +284,8 @@ class HandGestureClassifier {
       GestureAction.ACKNOWLEDGE -> 400f
       GestureAction.TOGGLE_CENTER_LOCK -> 700f
       GestureAction.CLEAR_DRILL -> 900f
-      GestureAction.CLOSE_DASHBOARD -> 900f
+      GestureAction.CLOSE_DASHBOARD -> 1200f
+      GestureAction.OPEN_DASHBOARD -> 700f
       else -> 600f
     }
 
@@ -567,7 +569,7 @@ class HandGestureClassifier {
   private fun dist2D(a: HandLandmarkPoint, b: HandLandmarkPoint): Float = hypot(a.x - b.x, a.y - b.y)
 
   companion object {
-    const val MIN_POSE_SCORE = 0.55f
+    const val MIN_POSE_SCORE = 0.65f
     const val HOLD_GAP_GRACE_MS = 350L
     const val HOLD_MAX_TRAVEL = 0.09f
     const val ACTION_COOLDOWN_MS = 650L
@@ -580,7 +582,7 @@ class HandGestureClassifier {
     private const val PINCH_FORWARD_DEADZONE = 0.004f
     private const val PINCH_PAN_DEADZONE = 0.002f
 
-    const val SWIPE_MIN_DELTA_X = 0.11f
+    const val SWIPE_MIN_DELTA_X = 0.14f
     const val SWIPE_MAX_WINDOW_MS = 750L
     const val SWIPE_GAP_RESET_MS = 280L
     const val SWIPE_COOLDOWN_MS = 650L

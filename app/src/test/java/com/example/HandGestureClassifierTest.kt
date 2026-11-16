@@ -73,29 +73,29 @@ class HandGestureClassifierTest {
     val c = HandGestureClassifier()
     val palm = listOf(obs(openPalm(), HandPose.OPEN_PALM))
     assertEquals(GestureAction.OPEN_DASHBOARD, c.process(palm, 1000L, DashboardMode.CLOSED).pendingAction)
-    val mid = c.process(palm, 1300L, DashboardMode.CLOSED)
+    val mid = c.process(palm, 1350L, DashboardMode.CLOSED)
     assertEquals(0.5f, mid.holdProgress, 0.02f)
-    assertEquals(GestureAction.OPEN_DASHBOARD, c.process(palm, 1600L, DashboardMode.CLOSED).action)
+    assertEquals(GestureAction.OPEN_DASHBOARD, c.process(palm, 1700L, DashboardMode.CLOSED).action)
 
     // Holding the same pose does not fire again until released.
     assertNull(c.process(palm, 2400L, DashboardMode.CLOSED).action)
     assertNull(c.process(palm, 3200L, DashboardMode.CLOSED).action)
 
     val fist = listOf(obs(closedFist(), HandPose.CLOSED_FIST))
-    hold(c, fist, 4000L, 4800L, DashboardMode.PERMANENT)
-    assertEquals(GestureAction.CLOSE_DASHBOARD, c.process(fist, 4920L, DashboardMode.PERMANENT).action)
+    hold(c, fist, 4000L, 5100L, DashboardMode.PERMANENT)
+    assertEquals(GestureAction.CLOSE_DASHBOARD, c.process(fist, 5220L, DashboardMode.PERMANENT).action)
   }
 
   @Test
-  fun palmHold_togglesOpenAndClosed_butSwipingHandDoesNotClose() {
+  fun presenterMode_palmOpensButNeverCloses_andSwipingHandDoesNotClose() {
     val c = HandGestureClassifier()
     val palm = listOf(obs(openPalm(), HandPose.OPEN_PALM))
-    hold(c, palm, 0L, 560L, DashboardMode.CLOSED)
-    assertEquals(GestureAction.OPEN_DASHBOARD, c.process(palm, 610L, DashboardMode.CLOSED).action)
+    hold(c, palm, 0L, 660L, DashboardMode.CLOSED)
+    assertEquals(GestureAction.OPEN_DASHBOARD, c.process(palm, 710L, DashboardMode.CLOSED).action)
     c.process(emptyList(), 900L, DashboardMode.PERMANENT) // hand lowered -> release
-    hold(c, palm, 1_600L, 2_400L, DashboardMode.PERMANENT)
-    assertNull("needs the longer 1 s hold", c.process(palm, 2_500L, DashboardMode.PERMANENT).action)
-    assertEquals(GestureAction.CLOSE_DASHBOARD, c.process(palm, 2_620L, DashboardMode.PERMANENT).action)
+    var palmClosed = false
+    for (t in 1_600L..6_000L step 33L) if (c.process(palm, t, DashboardMode.PERMANENT).action == GestureAction.CLOSE_DASHBOARD) palmClosed = true
+    assertFalse("a raised palm must never close the dashboard", palmClosed)
 
     val moving = HandGestureClassifier()
     var closed = false
@@ -126,23 +126,28 @@ class HandGestureClassifierTest {
     var closed = false
     for (t in 0L..2_000L step 33L) if (c.process(listOf(obs(point)), t, DashboardMode.PERMANENT).action == GestureAction.CLOSE_DASHBOARD) closed = true
     assertFalse(closed)
-    // A real fist still closes, but only after the longer 0.9 s hold.
+    // A confidently-classified fist still closes, but only after the 1.2 s hold.
     val f = HandGestureClassifier()
     val fist = listOf(obs(closedFist(), HandPose.CLOSED_FIST))
-    hold(f, fist, 0L, 800L, DashboardMode.PERMANENT)
-    assertNull(f.process(fist, 850L, DashboardMode.PERMANENT).action)
-    assertEquals(GestureAction.CLOSE_DASHBOARD, f.process(fist, 920L, DashboardMode.PERMANENT).action)
+    hold(f, fist, 0L, 1_100L, DashboardMode.PERMANENT)
+    assertNull(f.process(fist, 1_150L, DashboardMode.PERMANENT).action)
+    assertEquals(GestureAction.CLOSE_DASHBOARD, f.process(fist, 1_220L, DashboardMode.PERMANENT).action)
+    // A fist-shaped hand without a confident ML label never closes it.
+    val g = HandGestureClassifier()
+    var guessClosed = false
+    for (t in 0L..3_000L step 33L) if (g.process(listOf(obs(closedFist())), t, DashboardMode.PERMANENT).action == GestureAction.CLOSE_DASHBOARD) guessClosed = true
+    assertFalse(guessClosed)
   }
 
   @Test
   fun heuristicFallback_recognisesPalmWithoutClassifierCategory() {
     val c = HandGestureClassifier()
     assertEquals(HandPose.OPEN_PALM, c.resolvePose(obs(openPalm())))
-    assertEquals(HandPose.CLOSED_FIST, c.resolvePose(obs(closedFist())))
+    assertEquals("geometry alone never reports a fist (presenter tuning)", HandPose.NONE, c.resolvePose(obs(closedFist())))
     // Low-confidence ML label is ignored in favour of geometry.
     assertEquals(HandPose.OPEN_PALM, c.resolvePose(HandObservation(openPalm(), HandPose.THUMB_UP, 0.2f)))
-    hold(c, listOf(obs(openPalm())), 0L, 560L, DashboardMode.CLOSED)
-    assertEquals(GestureAction.OPEN_DASHBOARD, c.process(listOf(obs(openPalm())), 610L, DashboardMode.CLOSED).action)
+    hold(c, listOf(obs(openPalm())), 0L, 660L, DashboardMode.CLOSED)
+    assertEquals(GestureAction.OPEN_DASHBOARD, c.process(listOf(obs(openPalm())), 710L, DashboardMode.CLOSED).action)
   }
 
   @Test
@@ -264,7 +269,11 @@ class HandGestureClassifierTest {
   @Test
   fun voiceCommands_parseNewVocabulary() {
     fun p(s: String) = VoiceCommandRecognizer.parseVoiceCommand(s)
-    assertEquals(VoiceCommand.TOGGLE_QUICK, p("Dashboard"))
+    assertNull("bare 'dashboard' is ignored in presenter tuning", p("Dashboard"))
+    assertNull(p("center"))
+    assertNull(p("copy that"))
+    assertEquals(VoiceCommand.CENTER_LOCK, p("center lock"))
+    assertEquals(VoiceCommand.TOGGLE_EYE_PREVIEW, p("show eyes"))
     assertEquals(VoiceCommand.OPEN_PERMANENT, p("dashboard-open"))
     assertEquals(VoiceCommand.CLOSE_PERMANENT, p("close dashboard"))
     assertEquals(VoiceCommand.NAVIGATE_ISOLATION, p("mental health"))
@@ -276,7 +285,7 @@ class HandGestureClassifierTest {
     assertEquals(VoiceCommand.NAVIGATE_ENVIRONMENT, p("map"))
     assertEquals(VoiceCommand.NAVIGATE_DRILLS, p("drills"))
     assertEquals(VoiceCommand.RECENTER_VIEW, p("recenter"))
-    assertEquals(VoiceCommand.CENTER_LOCK, p("center"))
+    assertEquals(VoiceCommand.CENTER_LOCK, p("keep centered"))
     assertEquals(VoiceCommand.END_ALL_EMERGENCIES, p("end all emergencies"))
     assertEquals(VoiceCommand.END_ALL_EMERGENCIES, p("all clear"))
     assertEquals(VoiceCommand.MAP_RECENTER, p("center map"))
